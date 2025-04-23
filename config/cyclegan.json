@@ -1,0 +1,53 @@
+{
+  "model": {
+    "name": "cyclegan",
+    "G_A": {
+      "name": "resnet_9blocks",
+      "ngf": 64,
+      "output_dim": 512,
+      "norm": "instance",
+      "use_dropout": false,
+      "init_type": "normal",
+      "init_gain": 0.02,
+      "pretrained": false
+    },
+    "G_B": {
+      "name": "resnet_9blocks",
+      "ngf": 64,
+      "output_dim": 512,
+      "norm": "instance",
+      "use_dropout": false,
+      "init_type": "normal",
+      "init_gain": 0.02,
+      "pretrained": false
+    },
+    "D_A": {
+      "name": "basic",
+      "ndf": 64,
+      "n_layers": 3,
+      "norm": "instance",
+      "init_type": "normal",
+      "init_gain": 0.02
+    },
+    "D_B": {
+      "name": "basic",
+      "ndf": 64,
+      "n_layers": 3,
+      "norm": "instance",
+      "init_type": "normal",
+      "init_gain": 0.02
+    }
+  },
+  "training": {
+    "loss": {
+      "gan_mode": "lsgan",
+      "lambda_A": 10.0,
+      "lambda_B": 10.0,
+      "lambda_identity": 0.5,
+      "lambda_perceptual": 0.0
+    },
+    "gradient_accumulation_steps": 1,
+    "mixed_precision": true,
+    "pool_size": 50
+  }
+}

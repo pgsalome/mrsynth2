@@ -1,0 +1,25 @@
+{
+  "model": {
+    "name": "vae",
+    "vae": {
+      "latent_dim": 16,
+      "kl_weight": 0.0001,
+      "recon_loss": "l1",
+      "conditional": true,
+      "sampling_mode": true,
+      "encoder": {
+        "ngf": 64,
+        "n_downsampling": 4,
+        "n_blocks": 4
+      },
+      "decoder": {
+        "ngf": 64,
+        "n_upsampling": 4,
+        "n_blocks": 4
+      }
+    }
+  },
+  "data": {
+    "batch_size": 16
+  }
+}

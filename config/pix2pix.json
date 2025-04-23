@@ -1,0 +1,28 @@
+{
+  "model": {
+    "name": "pix2pix",
+    "G_A": {
+      "name": "unet_256",
+      "ngf": 64,
+      "norm": "batch",
+      "use_dropout": true,
+      "init_type": "normal",
+      "init_gain": 0.02
+    },
+    "D_A": {
+      "name": "basic",
+      "ndf": 64,
+      "n_layers": 3,
+      "norm": "batch",
+      "init_type": "normal",
+      "init_gain": 0.02
+    }
+  },
+  "training": {
+    "loss": {
+      "gan_mode": "vanilla",
+      "lambda_L1": 100.0,
+      "lambda_perceptual": 10.0
+    }
+  }
+}

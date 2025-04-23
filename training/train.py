@@ -1,6 +1,5 @@
 import time
 import os
-import torch
 import sys
 import json
 import argparse
@@ -11,13 +10,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data import create_dataset
 from models import create_model
-from utils.visualizer import Visualizer
-from utils.cache import check_cache, get_cached_data
+from src.utils.visualizer import Visualizer
+from src.utils.cache import check_cache, get_cached_data
 
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train CycleGAN/pix2pix')
+    parser = argparse.ArgumentParser(description='Train CycleGAN/pix2pix.json')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--dataroot', type=str, help='Path to dataset (overrides config)')
     parser.add_argument('--name', type=str, help='Name of the experiment (overrides config)')
@@ -70,7 +69,7 @@ def train_model(opt):
     # Initialize wandb if enabled
     if opt.get('use_wandb', False):
         import wandb
-        wandb.init(project=opt.get('wandb_project_name', 'pytorch-CycleGAN-and-pix2pix'),
+        wandb.init(project=opt.get('wandb_project_name', 'pytorch-CycleGAN-and-pix2pix.json'),
                    name=opt.get('name', 'experiment'),
                    config=opt)
 

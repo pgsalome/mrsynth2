@@ -1,129 +1,269 @@
-# CycleGAN and pix2pix in PyTorch - Refactored
+# MRSynth2: MRI Sequence Synthesis with GANs
 
-This is a refactored version of the PyTorch implementation of CycleGAN and pix2pix, with added support for:
-- Optuna hyperparameter tuning
-- Data preprocessing caching
-- Improved directory structure
-- Central entry point for all operations
+A deep learning repository for synthesizing and translating between MRI sequences using state-of-the-art GAN models.
+
+## Overview
+
+This repository implements multiple image-to-image translation models for MRI sequence synthesis tasks. It enables the generation of one MRI contrast from another (e.g., T1-weighted to T2-weighted) using various GAN architectures. The codebase features a modular and extensible design based on the structure of the mrclass2 classification repository.
+
+## Features
+
+- **Multiple GAN Architectures**:
+  - CycleGAN for unpaired image translation
+  - Pix2Pix for paired image translation
+  - Self-attention enhanced generators
+  - Spectral normalization for discriminator stability
+
+- **Advanced Generators and Discriminators**:
+  - ResNet-based generators with 6 or 9 residual blocks
+  - U-Net generators of various depths
+  - PatchGAN discriminators
+  - Multi-scale discriminators for high-resolution images
+
+- **Loss Functions**:
+  - Adversarial losses (vanilla, LSGAN)
+  - Cycle consistency loss
+  - Identity loss
+  - Perceptual loss (VGG-based)
+  - StyleGAN2-inspired architecture options
+
+- **Optimization**:
+  - Bayesian hyperparameter optimization with Optuna
+  - Configurable learning rate schedulers (step, cosine, plateau)
+  - Extensive metrics for model evaluation (PSNR, SSIM, LPIPS, FID)
+
+- **Experiment Tracking**:
+  - Weights & Biases integration
+  - TensorBoard logging
+  - Comprehensive metrics visualization
+
+- **Reproducibility**:
+  - Complete configuration management system
+  - Random seed control
+  - Result archiving and analysis tools
 
 ## Directory Structure
-/
-├── config/               # Configuration files
-├── data/                 # Dataset handling
-├── models/               # Model definitions
-├── preprocessing/        # Data preprocessing
-├── training/             # Training and testing
-├── utils/                # Utility functions
-├── scripts/              # Helper scripts
-├── main.py               # Main entry point
-├── requirements.txt      # Dependencies
-└── README.md             # This file
+
+```
+mrsynth2/
+├── config/                # Configuration files
+│   ├── default.json      # Default configuration
+│   └── experiments/      # Experiment-specific configs
+├── data_loader.py         # Data loading pipeline
+├── evaluate.py            # Evaluation script
+├── models/                # Model implementations
+│   ├── cycle_gan.py      # CycleGAN implementation
+│   ├── discriminator.py  # Discriminator architectures
+│   ├── generator.py      # Generator architectures
+│   └── pix2pix.py        # Pix2Pix implementation
+├── predict.py             # Inference script
+├── run_experiments.py     # Experiment runner with Optuna
+├── train.py               # Training script
+├── utils/                 # Utility functions
+│   ├── dataclass.py      # Data structures
+│   ├── image_pool.py     # Image buffer for GANs
+│   ├── io.py             # I/O utilities
+│   ├── metrics.py        # Evaluation metrics
+│   ├── perceptual_loss.py # Perceptual losses
+│   └── visualize.py      # Visualization utilities
+├── requirements.txt       # Package dependencies
+└── README.md              # This file
+```
 
 ## Installation
 
-1. Clone this repository:
+1. Clone the repository:
 ```bash
-git clone https://github.com/username/refactored-CycleGAN-and-pix2pix
-cd refactored-CycleGAN-and-pix2pix
+git clone https://github.com/username/mrsynth2.git
+cd mrsynth2
+```
 
-Install dependencies:
+2. Create a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-bashpip install -r requirements.txt
-Usage
-Preprocessing Data
-bashpython main.py preprocess --config config/train_config.json --dataroot ./datasets/facades
-Training
-bashpython main.py train --config config/train_config.json --name facades_pix2pix --model pix2pix --direction BtoA
-Testing
-bashpython main.py test --config config/train_config.json --name facades_pix2pix --model pix2pix --direction BtoA
-Hyperparameter Tuning
-bashpython main.py tune --config config/train_config.json --n_trials 50 --study_name "my_tuning_study"
-Configuration
-Configuration files are stored in the config/ directory:
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-base_config.json: Base configuration settings
-train_config.json: Training-specific settings
-hyperparameter_space.json: Defines ranges for Optuna hyperparameter tuning
+## Requirements
 
-Key Hyperparameters
+- Python 3.8+
+- PyTorch 1.8+
+- torchvision
+- numpy
+- pandas
+- matplotlib
+- tqdm
+- wandb (for experiment tracking)
+- optuna (for hyperparameter optimization)
+- scikit-image
+- lpips (for perceptual metrics)
+- tensorboard
 
-lr: Learning rate
-beta1: Beta1 parameter for Adam optimizer
-lambda_L1: Weight for L1 loss (pix2pix)
-lambda_A/lambda_B: Weights for cycle consistency loss (CycleGAN)
-netG: Generator architecture (resnet_9blocks, resnet_6blocks, unet_256, unet_128)
-netD: Discriminator architecture (basic, n_layers, pixel)
-n_layers_D: Number of layers for n_layers discriminator
-norm: Normalization type (batch, instance, none)
-gan_mode: GAN loss type (vanilla, lsgan, wgangp)
+## Usage
 
-Caching
-The refactored codebase includes caching for preprocessed data to speed up multiple training runs.
+### Configuration
 
-Use --use_cache to enable caching
-Use --clear_cache to clear the cache before running
+The model and training parameters are controlled through JSON configuration files. Key sections include:
 
-Weights & Biases Integration
-The code integrates with Weights & Biases for experiment tracking:
+- **data**: Dataset paths, preprocessing, and augmentation
+- **model**: Model architecture (generator and discriminator configurations)
+- **training**: Training parameters (optimizer, scheduler, loss functions)
+- **logging**: Logging and visualization options
 
-Use --use_wandb to enable W&B logging
-Set --wandb_project_name to specify the project name
+Example configuration for CycleGAN:
+```json
+{
+  "data": {
+    "dataset_dir": "./data/cyclegan/horse2zebra",
+    "batch_size": 8,
+    "direction": "AtoB"
+  },
+  "model": {
+    "name": "cyclegan",
+    "G_A": {"name": "resnet_9blocks"},
+    "G_B": {"name": "resnet_9blocks"},
+    "D_A": {"name": "basic"},
+    "D_B": {"name": "basic"}
+  },
+  "training": {
+    "loss": {
+      "lambda_A": 10.0,
+      "lambda_B": 10.0
+    }
+  }
+}
+```
 
-Optuna Integration
-Hyperparameter tuning is done using Optuna:
+### Training
 
-Create a study with tune operation
-Customize the parameter search space in config/hyperparameter_space.json
-Results are stored in SQLite database and can be analyzed with Optuna Dashboard
+To train a model with the default configuration:
 
+```bash
+python train.py --config config/base.json
+```
 
-## 12. Testing
+To customize training parameters:
 
-To ensure all functionality works as expected, I will test:
+```bash
+python train.py --config config/base.json --batch_size 4 --model_type cyclegan
+```
 
-1. Basic functionality:
-   - Preprocessing
-   - Training
-   - Testing
-   - Hyperparameter tuning
+### Evaluation
 
-2. Caching:
-   - Verify cached data is correctly loaded
-   - Verify cache clearing works
+To evaluate a trained model:
 
-3. Wandb integration:
-   - Verify metrics are logged correctly
+```bash
+python evaluate.py --model_dir saved_models/cyclegan_20230415_120000 --compute_fid
+```
 
-4. Optuna integration:
-   - Verify trials are running properly
-   - Verify best parameters are saved correctly
+### Inference
 
-## 13. Additional Considerations
+To run inference on a single image:
 
-### 13.1 Backward Compatibility
-Maintain backward compatibility with the original code structure where possible to facilitate migration.
+```bash
+python predict.py --model_dir saved_models/cyclegan_20230415_120000 --input_image input.png --output_dir results
+```
 
-### 13.2 Error Handling
-Implement comprehensive error handling throughout the codebase to provide helpful error messages.
+### Hyperparameter Optimization
 
-### 13.3 Documentation
-Add detailed docstrings and comments to all functions and classes.
+To run Bayesian hyperparameter optimization with Optuna:
 
-### 13.4 Performance Optimization
-Look for opportunities to optimize performance, especially in data loading and preprocessing.
+```bash
+python run_experiments.py --base_config config/base.json --output_dir experiments/optuna --n_trials 50 --mode optuna
+```
 
-### 13.5 Memory Management
-Implement proper memory management practices, especially for large datasets.
+To generate configurations for a grid search:
 
-### 13.6 Multi-GPU Support
-Ensure multi-GPU support is maintained and properly documented.
+```bash
+python run_experiments.py --base_config config/base.json --output_dir experiments/grid --mode grid --generate_only
+```
 
-### 13.7 CI/CD
-Set up basic CI/CD for automated testing of the refactored codebase.
-</refactoring_plan>
+## Extending the Repository
 
-This comprehensive refactoring plan maintains the core functionality of the CycleGAN and pix2pix implementations while significantly improving the architecture, adding hyperparameter tuning with Optuna, implementing proper caching mechanisms, and creating a centralized entry point for all operations.
+### Adding New Generator Architectures
 
-The plan includes detailed implementations of key files including the preprocessing module, caching system, hyperparameter tuning framework, and a unified main interface. It also updates the configuration files and documentation to make the system more accessible and maintainable.
+To add a new generator architecture, extend the `models/generator.py` module with your implementation and update the `get_generator` function.
 
-By following this plan, you'll transform the repository into a more modern, maintainable, and powerful tool for image-to-image translation research while preserving compatibility with existing models and datasets.
+### Adding New Discriminator Architectures
+
+To add a new discriminator architecture, extend the `models/discriminator.py` module with your implementation and update the `get_discriminator` function.
+
+### Adding New Loss Functions
+
+To add a new loss function, implement it in the appropriate model file (e.g., `models/cycle_gan.py`).
+
+## Examples
+
+### CycleGAN Training for T1 to T2 Translation
+
+```bash
+python train.py --config config/cyclegan_t1_t2.json
+```
+
+### Pix2Pix Training for T1 to FLAIR Translation
+
+```bash
+python train.py --config config/pix2pix_t1_flair.json
+```
+
+### Evaluating Multiple Models
+
+```bash
+for model in saved_models/*/; do
+  python evaluate.py --model_dir $model --output_dir evaluations/$(basename $model)
+done
+```
+
+## Weights & Biases Integration
+
+To track experiments with Weights & Biases:
+
+1. Set `logging.wandb.enabled` to `true` in the configuration
+2. Configure your project and entity in the configuration or set them up with `wandb login`
+
+```json
+"logging": {
+  "wandb": {
+    "enabled": true,
+    "project": "mrsynth2",
+    "entity": "your-username",
+    "name": "experiment-name",
+    "tags": ["cyclegan", "t1-t2"]
+  }
+}
+```
+
+## Citation
+
+If you use this code in your research, please cite:
+
+```
+@misc{mrsynth2,
+  author = {Author, A.},
+  title = {MRSynth2: MRI Sequence Synthesis with GANs},
+  year = {2023},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/username/mrsynth2}}
+}
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgements
+
+This project builds upon methods and architectures from the following works:
+
+- CycleGAN: Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks (Zhu et al., ICCV 2017)
+- Pix2Pix: Image-to-Image Translation with Conditional Adversarial Networks (Isola et al., CVPR 2017)
+- Self-Attention GANs (Zhang et al., NIPS 2018)
+- StyleGAN2 (Karras et al., CVPR 2020)
+
+The structure is adapted from the mrclass2 repository for MRI classification.   

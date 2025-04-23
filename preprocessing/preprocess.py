@@ -1,21 +1,18 @@
 import argparse
 import os
 import sys
-import numpy as np
 from PIL import Image
-import torchvision.transforms as transforms
-import torch
 from tqdm import tqdm
 import json
 
 # Add parent directory to path to import from utils
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.cache import cache_data, check_cache
+from src.utils.cache import cache_data, check_cache
 
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Preprocess data for CycleGAN/pix2pix')
+    parser = argparse.ArgumentParser(description='Preprocess data for CycleGAN/pix2pix.json')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--input_dir', type=str, help='Input directory (overrides config)')
     parser.add_argument('--output_dir', type=str, help='Output directory (overrides config)')
@@ -39,7 +36,7 @@ def load_config(config_path):
 
 
 def preprocess_aligned_dataset(opt):
-    """Preprocess aligned dataset (like pix2pix)"""
+    """Preprocess aligned dataset (like pix2pix.json)"""
     # Define directories
     input_dir = opt.input_dir
     output_dir = opt.output_dir
