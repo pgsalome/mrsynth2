@@ -7,15 +7,18 @@ from models.generator import get_generator
 from models.discriminator import get_discriminator
 from utils.image_pool import ImagePool
 from utils.perceptual_loss import PerceptualLoss
+from models.components.initialization import set_requires_grad
 
 
 class CycleGANModel(nn.Module):
     """CycleGAN Model for unpaired image-to-image translation"""
 
     def __init__(self, config: Dict[str, Any]):
-        """Initialize the CycleGAN class.
-        Parameters:
-            config (Dict[str, Any]): Configuration dictionary
+        """
+        Initialize the CycleGAN class.
+
+        Args:
+            config: Configuration dictionary
         """
         super(CycleGANModel, self).__init__()
         self.config = config
@@ -28,8 +31,7 @@ class CycleGANModel(nn.Module):
         input_nc = config["data"]["input_nc"]
         output_nc = config["data"]["output_nc"]
 
-        # Define networks
-        # Generators: G_A: A -> B; G_B: B -> A
+        # Define generators: G_A: A -> B; G_B: B -> A
         self.netG_A = get_generator(self.model_config["G_A"], input_nc, output_nc)
         self.netG_B = get_generator(self.model_config["G_B"], output_nc, input_nc)
 
@@ -213,30 +215,18 @@ class CycleGANModel(nn.Module):
 
         # G_A and G_B
         # Disable backprop for discriminators
-        self.set_requires_grad([self.netD_A, self.netD_B], False)
+        set_requires_grad([self.netD_A, self.netD_B], False)
         self.optimizer_G.zero_grad()  # Set G's gradients to zero
         self.loss_G = self.backward_G()  # Calculate gradients for G
         self.optimizer_G.step()  # Update G's weights
 
         # D_A and D_B
         # Enable backprop for discriminators
-        self.set_requires_grad([self.netD_A, self.netD_B], True)
+        set_requires_grad([self.netD_A, self.netD_B], True)
         self.optimizer_D.zero_grad()  # Set D's gradients to zero
         self.backward_D_A()  # Calculate gradients for D_A
         self.backward_D_B()  # Calculate gradients for D_B
         self.optimizer_D.step()  # Update D's weights
-
-    def set_requires_grad(self, nets, requires_grad=False):
-        """Set requies_grad=False for all the networks to avoid unnecessary computations
-        Parameters:
-            nets (network list)   -- a list of networks
-            requires_grad (bool)  -- whether the networks require gradients or not
-        """
-        if not isinstance(nets, list):
-            nets = [nets]
-        for net in nets:
-            for param in net.parameters():
-                param.requires_grad = requires_grad
 
     def get_current_losses(self):
         """Return traning losses / errors"""
@@ -245,6 +235,25 @@ class CycleGANModel(nn.Module):
             if isinstance(name, str):
                 errors_ret[name] = float(getattr(self, 'loss_' + name))
         return errors_ret
+
+    def compute_validation_metrics(self):
+        """Compute validation metrics"""
+        metrics = {}
+
+        # Compute PSNR and SSIM for A->B
+        from utils.metrics import compute_psnr, compute_ssim
+        metrics['psnr_B'] = compute_psnr(self.fake_B, self.real_B)
+        metrics['ssim_B'] = compute_ssim(self.fake_B, self.real_B)
+
+        # Compute PSNR and SSIM for B->A
+        metrics['psnr_A'] = compute_psnr(self.fake_A, self.real_A)
+        metrics['ssim_A'] = compute_ssim(self.fake_A, self.real_A)
+
+        # Average metrics
+        metrics['psnr'] = (metrics['psnr_A'] + metrics['psnr_B']) / 2
+        metrics['ssim'] = (metrics['ssim_A'] + metrics['ssim_B']) / 2
+
+        return metrics
 
     def update_learning_rate(self, metric=None):
         """Update learning rates for all the networks; called at the end of every epoch"""
@@ -302,54 +311,65 @@ class CycleGANModel(nn.Module):
             self.schedulers.append(scheduler)
 
     def save_networks(self, epoch):
-        """Save all the networks to the disk.
-        Parameters:
-            epoch (int) -- current epoch; used in the file name '%s_net_%s.pth' % (epoch, name)
-        """
-        save_path = self.config["logging"]["save_model_dir"]
+        """Save all the networks to the disk."""
+        import os
+        save_path = os.path.join(self.config["logging"]["save_model_dir"], f"{epoch}")
+        os.makedirs(save_path, exist_ok=True)
+
         for name in self.model_names:
             if isinstance(name, str):
-                save_filename = '%s_net_%s.pth' % (epoch, name)
+                save_filename = f'net_{name}.pth'
                 save_path_model = os.path.join(save_path, save_filename)
                 net = getattr(self, 'net' + name)
 
-                torch.save(net.cpu().state_dict(), save_path_model)
-                net.to(self.device)
+                if isinstance(net, torch.nn.DataParallel):
+                    torch.save(net.module.state_dict(), save_path_model)
+                else:
+                    torch.save(net.state_dict(), save_path_model)
 
     def load_networks(self, epoch):
-        """Load all the networks from the disk.
-        Parameters:
-            epoch (int) -- current epoch; used in the file name '%s_net_%s.pth' % (epoch, name)
-        """
-        save_path = self.config["logging"]["save_model_dir"]
+        """Load all the networks from the disk."""
+        import os
+        if isinstance(epoch, str) and epoch.lower() not in ('latest', 'best', 'final'):
+            # If epoch is a path
+            load_path = epoch
+        else:
+            load_path = os.path.join(self.config["logging"]["save_model_dir"], f"{epoch}")
+
         for name in self.model_names:
             if isinstance(name, str):
-                load_filename = '%s_net_%s.pth' % (epoch, name)
-                load_path = os.path.join(save_path, load_filename)
+                load_filename = f'net_{name}.pth'
+                load_path_model = os.path.join(load_path, load_filename)
+
+                # Skip if model doesn't exist
+                if not os.path.exists(load_path_model):
+                    print(f"Warning: Model {load_path_model} not found, skipping")
+                    continue
+
                 net = getattr(self, 'net' + name)
 
-                state_dict = torch.load(load_path, map_location=self.device)
+                # Load to CPU to avoid GPU memory leak
+                state_dict = torch.load(load_path_model, map_location='cpu')
+
                 if hasattr(state_dict, '_metadata'):
                     del state_dict._metadata
 
                 net.load_state_dict(state_dict)
+                net.to(self.device)
+                print(f"Loaded {load_path_model}")
 
     def test(self):
-        """Forward function used in test time.
-        This function wraps <forward> function in no_grad() so we don't save intermediate steps for backprop
-        """
+        """Forward function used in test time."""
         with torch.no_grad():
             self.forward()
             return {
                 'real_A': self.real_A,
                 'fake_B': self.fake_B,
                 'real_B': self.real_B,
-                'fake_A': self.fake_A
+                'fake_A': self.fake_A,
+                'rec_A': self.rec_A,
+                'rec_B': self.rec_B
             }
-
-    def compute_visuals(self):
-        """Calculate additional output images for visdom and HTML visualization"""
-        pass
 
     def get_current_visuals(self):
         """Return visualization images"""

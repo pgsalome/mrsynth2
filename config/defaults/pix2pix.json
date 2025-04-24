@@ -18,11 +18,14 @@
       "init_gain": 0.02
     }
   },
+  "data": {
+    "dataset_mode": "aligned"
+  },
   "training": {
     "loss": {
       "gan_mode": "vanilla",
       "lambda_L1": 100.0,
-      "lambda_perceptual": 10.0
+      "lambda_perceptual": 0.0
     }
   }
 }

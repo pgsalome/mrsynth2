@@ -4,22 +4,18 @@
     "G_A": {
       "name": "resnet_9blocks",
       "ngf": 64,
-      "output_dim": 512,
       "norm": "instance",
       "use_dropout": false,
       "init_type": "normal",
-      "init_gain": 0.02,
-      "pretrained": false
+      "init_gain": 0.02
     },
     "G_B": {
       "name": "resnet_9blocks",
       "ngf": 64,
-      "output_dim": 512,
       "norm": "instance",
       "use_dropout": false,
       "init_type": "normal",
-      "init_gain": 0.02,
-      "pretrained": false
+      "init_gain": 0.02
     },
     "D_A": {
       "name": "basic",
@@ -38,6 +34,9 @@
       "init_gain": 0.02
     }
   },
+  "data": {
+    "dataset_mode": "unaligned"
+  },
   "training": {
     "loss": {
       "gan_mode": "lsgan",
@@ -46,8 +45,6 @@
       "lambda_identity": 0.5,
       "lambda_perceptual": 0.0
     },
-    "gradient_accumulation_steps": 1,
-    "mixed_precision": true,
     "pool_size": 50
   }
 }

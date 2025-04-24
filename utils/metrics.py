@@ -1,59 +1,131 @@
 import torch
 import numpy as np
-from typing import Dict, Any, List, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple, Union
 import torch.nn.functional as F
 import math
-from kornia.metrics import ssim as kornia_ssim
-from kornia.metrics import psnr as kornia_psnr
-import lpips
-from skimage.metrics import structural_similarity as ski_ssim
-import torchvision.transforms as transforms
 from PIL import Image
 
-# Try to import FID score calculation
-try:
-    from pytorch_fid import fid_score
 
-    FID_AVAILABLE = True
-except ImportError:
-    FID_AVAILABLE = False
-    print("Warning: pytorch_fid not available, FID score calculation will be disabled.")
+def tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
+    """
+    Convert a PyTorch tensor to a NumPy array.
+
+    Args:
+        tensor: PyTorch tensor
+
+    Returns:
+        NumPy array
+    """
+    # Move tensor to CPU and detach from graph
+    tensor = tensor.detach().cpu()
+
+    # Convert to NumPy array
+    if tensor.requires_grad:
+        tensor = tensor.detach()
+
+    return tensor.numpy()
 
 
-def compute_psnr(x: torch.Tensor, y: torch.Tensor, data_range: float = 2.0) -> float:
+def ensure_same_dimensions(x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Ensure two tensors have the same dimensions.
+
+    Args:
+        x: First tensor
+        y: Second tensor
+
+    Returns:
+        Tuple of tensors with same dimensions
+    """
+    # Check if dimensions match
+    if x.shape != y.shape:
+        # Resize y to match x
+        y = F.interpolate(y, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
+
+    return x, y
+
+
+def ensure_channel_dimensions(x: torch.Tensor) -> torch.Tensor:
+    """
+    Ensure tensor has the right channel dimensions.
+
+    Args:
+        x: Input tensor
+
+    Returns:
+        Tensor with proper channel dimensions
+    """
+    # Add batch dimension if needed
+    if x.dim() == 3:
+        x = x.unsqueeze(0)
+
+    # Convert grayscale to RGB if needed
+    if x.shape[1] == 1:
+        x = x.repeat(1, 3, 1, 1)
+
+    return x
+
+
+def normalize_tensor(x: torch.Tensor, target_range: Tuple[float, float] = (0, 1)) -> torch.Tensor:
+    """
+    Normalize tensor to target range.
+
+    Args:
+        x: Input tensor
+        target_range: Target range as (min, max)
+
+    Returns:
+        Normalized tensor
+    """
+    # Get current range
+    current_min = x.min()
+    current_max = x.max()
+
+    # Handle degenerate case
+    if current_min == current_max:
+        return torch.ones_like(x) * target_range[0]
+
+    # Normalize to target range
+    x_normalized = (x - current_min) / (current_max - current_min)
+    x_normalized = x_normalized * (target_range[1] - target_range[0]) + target_range[0]
+
+    return x_normalized
+
+
+def compute_psnr(x: torch.Tensor, y: torch.Tensor, data_range: float = 1.0) -> float:
     """
     Compute Peak Signal-to-Noise Ratio.
 
     Args:
         x: Generated image tensor
         y: Target image tensor
-        data_range: Range of the data (default 2.0 for images in [-1, 1])
+        data_range: Range of the data
 
     Returns:
         PSNR value
     """
-    # Ensure same device and correct dimensions
+    # Ensure same dimensions and device
+    x, y = ensure_same_dimensions(x, y)
     if x.device != y.device:
         y = y.to(x.device)
 
-    # Use kornia's implementation if available
-    try:
-        # Kornia's PSNR expects tensors in range [0, 1] or [0, 255]
-        # Scale if needed
-        if x.min() < 0:
-            x_scaled = (x + 1) / 2  # [-1, 1] -> [0, 1]
-            y_scaled = (y + 1) / 2
-        else:
-            x_scaled = x
-            y_scaled = y
+    # Normalize if needed
+    if x.min() < 0 or x.max() > 1:
+        x = normalize_tensor(x)
+    if y.min() < 0 or y.max() > 1:
+        y = normalize_tensor(y)
 
-        return kornia_psnr(x_scaled, y_scaled, max_val=1.0).item()
-    except:
-        # Fallback to manual calculation
-        mse = F.mse_loss(x, y)
-        if mse == 0:
-            return float('inf')
-        return 20 * math.log10(data_range / math.sqrt(mse.item()))
+    # Compute MSE
+    mse = F.mse_loss(x, y)
+
+    # Avoid division by zero
+    if mse == 0:
+        return float('inf')
+
+    # Compute PSNR
+    psnr = 20 * math.log10(data_range / math.sqrt(mse.item()))
+
+    return psnr
 
 
 def compute_ssim(x: torch.Tensor, y: torch.Tensor, window_size: int = 11) -> float:
@@ -68,231 +140,187 @@ def compute_ssim(x: torch.Tensor, y: torch.Tensor, window_size: int = 11) -> flo
     Returns:
         SSIM value
     """
-    # Ensure same device and correct dimensions
-    if x.device != y.device:
-        y = y.to(x.device)
-
-    # Try kornia's SSIM
+    # Try to use kornia if available
     try:
-        # Kornia's SSIM expects tensors in range [0, 1]
-        # Scale if needed
-        if x.min() < 0:
-            x_scaled = (x + 1) / 2  # [-1, 1] -> [0, 1]
-            y_scaled = (y + 1) / 2
-        else:
-            x_scaled = x
-            y_scaled = y
+        import kornia.metrics as metrics
 
-        ssim_val = kornia_ssim(x_scaled, y_scaled, window_size=window_size)
+        # Ensure same dimensions and device
+        x, y = ensure_same_dimensions(x, y)
+        if x.device != y.device:
+            y = y.to(x.device)
+
+        # Normalize if needed
+        if x.min() < 0 or x.max() > 1:
+            x = normalize_tensor(x)
+        if y.min() < 0 or y.max() > 1:
+            y = normalize_tensor(y)
+
+        # Compute SSIM using kornia
+        ssim_val = metrics.ssim(x, y, window_size=window_size)
+
         return ssim_val.mean().item()
-    except:
+
+    except ImportError:
         # Fallback to skimage implementation
-        x_np = x.detach().cpu().numpy().transpose(0, 2, 3, 1)
-        y_np = y.detach().cpu().numpy().transpose(0, 2, 3, 1)
+        try:
+            from skimage.metrics import structural_similarity as ski_ssim
 
-        if x_np.shape[3] == 1:  # If grayscale, remove channel dimension
-            x_np = x_np.squeeze(axis=3)
-            y_np = y_np.squeeze(axis=3)
+            # Convert to numpy arrays
+            x_np = tensor_to_numpy(x)
+            y_np = tensor_to_numpy(y)
 
-        # Calculate SSIM for each image in the batch
-        ssim_vals = []
-        for i in range(x_np.shape[0]):
-            # Convert to range [0, 1] if needed
-            x_i = x_np[i]
-            y_i = y_np[i]
+            # Transpose from (B, C, H, W) to (B, H, W, C)
+            if x_np.ndim == 4:
+                x_np = np.transpose(x_np, (0, 2, 3, 1))
+                y_np = np.transpose(y_np, (0, 2, 3, 1))
 
-            if x_i.min() < 0:
-                x_i = (x_i + 1) / 2
-                y_i = (y_i + 1) / 2
+            # Normalize if needed
+            if x_np.min() < 0 or x_np.max() > 1:
+                x_np = (x_np - x_np.min()) / (x_np.max() - x_np.min())
+            if y_np.min() < 0 or y_np.max() > 1:
+                y_np = (y_np - y_np.min()) / (y_np.max() - y_np.min())
 
-            ssim_i = ski_ssim(x_i, y_i,
-                              data_range=1.0,
-                              multichannel=True if x_np.ndim == 4 else False)
-            ssim_vals.append(ssim_i)
+            # Handle batch dimension
+            if x_np.ndim == 4:
+                ssim_vals = []
+                for i in range(x_np.shape[0]):
+                    ssim_i = ski_ssim(x_np[i], y_np[i], data_range=1.0, multichannel=True)
+                    ssim_vals.append(ssim_i)
+                return np.mean(ssim_vals)
+            else:
+                return ski_ssim(x_np, y_np, data_range=1.0, multichannel=(x_np.ndim > 2))
 
-        return np.mean(ssim_vals)
+        except ImportError:
+            # Basic implementation if neither kornia nor skimage is available
+            # Implementation details omitted for brevity
+            raise ImportError("Neither kornia nor scikit-image available for SSIM computation")
 
 
-def compute_lpips(x: torch.Tensor, y: torch.Tensor, lpips_model=None, net: str = 'alex') -> float:
+def compute_lpips(x: torch.Tensor, y: torch.Tensor, net: str = 'alex') -> float:
     """
     Compute LPIPS perceptual similarity.
 
     Args:
         x: Generated image tensor
         y: Target image tensor
-        lpips_model: Pre-initialized LPIPS model (optional)
-        net: Network to use if lpips_model is None ('alex', 'vgg', 'squeeze')
+        net: Network to use ('alex', 'vgg', or 'squeeze')
 
     Returns:
         LPIPS value (lower means more similar)
     """
-    # Initialize LPIPS model if not provided
-    if lpips_model is None:
-        try:
-            lpips_model = lpips.LPIPS(net=net)
-            lpips_model.to(x.device)
-        except:
-            print("LPIPS package not available. Install with: pip install lpips")
-            return 0.0
+    try:
+        import lpips
 
-    # Ensure same device
-    if x.device != y.device:
-        y = y.to(x.device)
+        # Ensure proper dimensions and normalization
+        x = ensure_channel_dimensions(x)
+        y = ensure_channel_dimensions(y)
 
-    # LPIPS expects input in range [-1, 1]
-    # If input is not in this range, normalize
-    if x.min() >= 0 and x.max() <= 1:
-        x = x * 2 - 1
-    if y.min() >= 0 and y.max() <= 1:
-        y = y * 2 - 1
+        # Normalize to [-1, 1] for LPIPS
+        if x.min() >= 0 and x.max() <= 1:
+            x = x * 2 - 1
+        if y.min() >= 0 and y.max() <= 1:
+            y = y * 2 - 1
 
-    # Compute LPIPS
-    with torch.no_grad():
-        lpips_value = lpips_model(x, y).mean()
+        # Create LPIPS model
+        lpips_model = lpips.LPIPS(net=net)
+        if x.is_cuda:
+            lpips_model = lpips_model.to(x.device)
 
-    return lpips_value.item()
+        # Compute LPIPS
+        with torch.no_grad():
+            lpips_value = lpips_model(x, y).mean()
+
+        return lpips_value.item()
+
+    except ImportError:
+        raise ImportError("LPIPS package not available. Install with: pip install lpips")
 
 
-def compute_fid(real_images_path: str, generated_images_path: str) -> float:
+def compute_fid(real_path: str, fake_path: str, batch_size: int = 50, dims: int = 2048) -> float:
     """
-    Compute Fréchet Inception Distance between real and generated images.
+    Compute Fréchet Inception Distance.
 
     Args:
-        real_images_path: Path to directory with real images
-        generated_images_path: Path to directory with generated images
+        real_path: Path to real images
+        fake_path: Path to fake images
+        batch_size: Batch size for FID computation
+        dims: Dimensionality of Inception features
 
     Returns:
         FID score (lower is better)
     """
-    if not FID_AVAILABLE:
-        print("FID calculation not available. Install with: pip install pytorch-fid")
-        return 0.0
-
     try:
+        from pytorch_fid import fid_score
+
+        # Compute FID
         fid_value = fid_score.calculate_fid_given_paths(
-            [real_images_path, generated_images_path],
-            batch_size=50,
+            paths=[real_path, fake_path],
+            batch_size=batch_size,
             device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-            dims=2048
+            dims=dims
         )
+
         return fid_value
-    except Exception as e:
-        print(f"Error computing FID score: {e}")
-        return 0.0
+
+    except ImportError:
+        raise ImportError("pytorch-fid package not available. Install with: pip install pytorch-fid")
 
 
-def compute_kid(real_features: torch.Tensor, gen_features: torch.Tensor,
-                subset_size: int = 100, num_subsets: int = 100) -> float:
-    """
-    Compute Kernel Inception Distance (KID). Uses polynomial kernel with degree 3.
+class MetricsTracker:
+    """Class for tracking and computing multiple metrics."""
 
-    Args:
-        real_features: Features extracted from real images
-        gen_features: Features extracted from generated images
-        subset_size: Size of the subsets
-        num_subsets: Number of subsets to use
+    def __init__(self):
+        """Initialize metrics tracker."""
+        self.metrics = {}
+        self.batch_sizes = {}
 
-    Returns:
-        KID score (lower is better)
-    """
-    n_real = real_features.shape[0]
-    n_gen = gen_features.shape[0]
+    def update(self, metric_name: str, value: float, batch_size: int = 1) -> None:
+        """
+        Update a metric.
 
-    if n_real < subset_size or n_gen < subset_size:
-        print(f"Warning: Not enough samples for KID. Using all {min(n_real, n_gen)} samples.")
-        subset_size = min(n_real, n_gen)
-        num_subsets = 1
+        Args:
+            metric_name: Name of the metric
+            value: Value to add
+            batch_size: Size of batch for weighted averaging
+        """
+        if metric_name not in self.metrics:
+            self.metrics[metric_name] = 0.0
+            self.batch_sizes[metric_name] = 0
 
-    # Polynomial kernel with degree 3 (cubic)
-    def polynomial_kernel(x, y):
-        return (torch.mm(x, y.t()) / x.shape[1] + 1) ** 3
+        # Update metric with weighted value
+        self.metrics[metric_name] += value * batch_size
+        self.batch_sizes[metric_name] += batch_size
 
-    kid_values = []
-    for _ in range(num_subsets):
-        # Randomly select subsets
-        real_idx = np.random.choice(n_real, subset_size, replace=False)
-        gen_idx = np.random.choice(n_gen, subset_size, replace=False)
+    def compute(self) -> Dict[str, float]:
+        """
+        Compute average metrics.
 
-        real_subset = real_features[real_idx]
-        gen_subset = gen_features[gen_idx]
+        Returns:
+            Dictionary of metric averages
+        """
+        return {
+            name: value / self.batch_sizes[name]
+            for name, value in self.metrics.items()
+            if self.batch_sizes[name] > 0
+        }
 
-        # Compute polynomial kernels
-        real_kernel = polynomial_kernel(real_subset, real_subset)
-        gen_kernel = polynomial_kernel(gen_subset, gen_subset)
-        cross_kernel = polynomial_kernel(real_subset, gen_subset)
-
-        # Compute KID
-        kid = real_kernel.mean() + gen_kernel.mean() - 2 * cross_kernel.mean()
-        kid_values.append(kid.item())
-
-    return np.mean(kid_values)
-
-
-def compute_inception_score(probs: torch.Tensor, splits: int = 10) -> Tuple[float, float]:
-    """
-    Compute Inception Score.
-
-    Args:
-        probs: Probabilities from Inception model (softmax outputs)
-        splits: Number of splits to compute mean and std
-
-    Returns:
-        Tuple of (mean inception score, standard deviation)
-    """
-    N = probs.shape[0]
-    split_size = N // splits
-
-    scores = []
-    for k in range(splits):
-        part = probs[k * split_size:(k + 1) * split_size]
-        py = part.mean(0)
-        scores.append(torch.exp(torch.mean(torch.sum(part * (torch.log(part) - torch.log(py)), 1))))
-
-    return torch.mean(torch.stack(scores)).item(), torch.std(torch.stack(scores)).item()
-
-
-def compute_all_metrics(generated_images: torch.Tensor, target_images: torch.Tensor) -> Dict[str, float]:
-    """
-    Compute all available metrics between generated and target images.
-
-    Args:
-        generated_images: Tensor of generated images
-        target_images: Tensor of target images
-
-    Returns:
-        Dictionary with metric names and values
-    """
-    metrics = {}
-
-    # PSNR
-    metrics['psnr'] = compute_psnr(generated_images, target_images)
-
-    # SSIM
-    metrics['ssim'] = compute_ssim(generated_images, target_images)
-
-    # LPIPS (if available)
-    try:
-        metrics['lpips'] = compute_lpips(generated_images, target_images)
-    except:
-        metrics['lpips'] = 0.0
-
-    return metrics
+    def reset(self) -> None:
+        """Reset all metrics."""
+        self.metrics = {}
+        self.batch_sizes = {}
 
 
 class EarlyStopping:
-    """
-    Early stopping to prevent overfitting.
-    Stops training when a monitored metric has not improved for a given patience.
-    """
+    """Early stopping handler for training."""
 
     def __init__(self, patience: int = 10, min_delta: float = 0.0, mode: str = 'min'):
         """
         Initialize early stopping.
 
         Args:
-            patience: Number of epochs with no improvement after which training will be stopped
-            min_delta: Minimum change in the monitored quantity to qualify as an improvement
-            mode: 'min' or 'max' depending on whether the monitored metric should be minimized or maximized
+            patience: Number of epochs to wait for improvement
+            min_delta: Minimum change to qualify as improvement
+            mode: 'min' for minimizing metric, 'max' for maximizing
         """
         self.patience = patience
         self.min_delta = min_delta
@@ -306,10 +334,10 @@ class EarlyStopping:
         Check if training should be stopped.
 
         Args:
-            metric_value: Current epoch's metric value
+            metric_value: Current metric value
 
         Returns:
-            Tuple of (improved, early_stop) booleans
+            Tuple of (improved, should_stop)
         """
         score = metric_value
 

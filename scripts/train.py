@@ -1,88 +1,144 @@
 import os
-import argparse
 import time
+import wandb
+import torch
+import argparse
 from pathlib import Path
+from tqdm import tqdm
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
-# Import wandb for experiment tracking
-import wandb
-
-# Import tensorboard for local logging
-from torch.utils.tensorboard import SummaryWriter
-
-# Import utilities
-from utils.io import ensure_dir, save_model, save_json, save_image_grid
-from utils.config import load_model_config
-from utils.metrics import compute_psnr, compute_ssim, compute_lpips, EarlyStopping
-from utils.data_loader import create_datasets, create_dataloaders
-from models.model_factory import get_model
+from utils.config import parse_args_and_config, Config
+from utils.metrics import MetricsTracker, EarlyStopping
+from utils.io import ensure_dir
+from data.datasets import create_datasets
+from data.dataloader import create_dataloaders
+from models import create_model
 
 
-def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train image-to-image translation models')
-    parser.add_argument('--model_type', type=str, required=True,
-                        choices=['cyclegan', 'pix2pix.json', 'diffusion.json', 'latent_diffusion.json', 'vae'],
-                        help='Model type to train')
-    parser.add_argument('--base_config', type=str, default='config/base.json',
-                        help='Path to base config file')
-    parser.add_argument('--name', type=str, help='Experiment name')
-    parser.add_argument('--gpu_ids', type=str, help='GPU IDs to use (comma-separated)')
-    parser.add_argument('--batch_size', type=int, help='Batch size')
-    parser.add_argument('--num_epochs', type=int, help='Number of training epochs')
-    parser.add_argument('--no_wandb', action='store_true', help='Disable wandb logging')
-    parser.add_argument('--seed', type=int, help='Random seed')
-    parser.add_argument('--output_dir', type=str, help='Directory to save outputs')
-    return parser.parse_args()
-
-
-def setup_environment(config: Dict[str, Any]) -> torch.device:
+def setup_logging(config: Config) -> None:
     """
-    Set up training environment.
+    Set up logging for training.
 
     Args:
-        config: Configuration dictionary
-
-    Returns:
-        Device to use for training
+        config: Training configuration
     """
-    # Set random seed for reproducibility
-    seed = config.get("seed", 42)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    # Create timestamp for unique run
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Set up device
-    gpu_ids = config.get("gpu_ids", "0")
-    gpu_ids = [int(id) for id in gpu_ids.split(',') if id.strip()]
+    # Get run name from config or create one
+    run_name = config.get("name")
+    if not run_name:
+        run_name = f"{config['model']['name']}_{timestamp}"
 
-    if torch.cuda.is_available() and len(gpu_ids) > 0:
-        device = torch.device(f'cuda:{gpu_ids[0]}')
-        print(f"Using GPU: {gpu_ids}")
-    else:
-        device = torch.device('cpu')
-        print("Using CPU")
+    # Update config with run name
+    config["run_name"] = run_name
 
-    # Set up output directories
-    for dir_path in [config["logging"]["save_model_dir"], config["logging"]["log_dir"]]:
-        ensure_dir(dir_path)
+    # Set up directories
+    log_dir = Path(config.get("logging.log_dir", "./logs")) / run_name
+    save_dir = Path(config.get("logging.save_model_dir", "./saved_models")) / run_name
 
-    return device
+    # Ensure directories exist
+    ensure_dir(str(log_dir))
+    ensure_dir(str(save_dir))
+
+    # Update config with directories
+    config["logging.log_dir"] = str(log_dir)
+    config["logging.save_model_dir"] = str(save_dir)
+
+    # Save config for reproducibility
+    config_path = log_dir / "config.json"
+    config.save(config_path)
+
+    # Set up wandb if enabled
+    if config.get("logging.wandb.enabled", False):
+        wandb_config = config.get("logging.wandb", {})
+        wandb.init(
+            project=wandb_config.get("project", "mrsynth2"),
+            entity=wandb_config.get("entity"),
+            name=wandb_config.get("name", run_name),
+            config=config.to_dict(),
+            tags=wandb_config.get("tags", []) + [config["model"]["name"]],
+            notes=wandb_config.get("notes", "")
+        )
+
+    # Set up tensorboard if enabled
+    if config.get("logging.tensorboard", False):
+        from torch.utils.tensorboard import SummaryWriter
+        return SummaryWriter(log_dir=log_dir)
+
+    return None
 
 
-def train_epoch(
-        model: nn.Module,
-        dataloader: DataLoader,
-        device: torch.device,
-        epoch: int,
-        config: Dict[str, Any],
-        writer: Optional[SummaryWriter] = None
-) -> Dict[str, float]:
+def log_metrics(metrics: Dict[str, float], epoch: int, config: Config, phase: str = "train",
+                writer=None) -> None:
+    """
+    Log metrics to console and tracking systems.
+
+    Args:
+        metrics: Dictionary of metrics
+        epoch: Current epoch
+        config: Training configuration
+        phase: Training phase
+        writer: TensorBoard writer
+    """
+    # Print metrics to console
+    print(f"\n{phase.capitalize()} Metrics for Epoch {epoch}:")
+    for name, value in metrics.items():
+        print(f"  {name}: {value:.4f}")
+
+    # Log to wandb if enabled
+    if config.get("logging.wandb.enabled", False):
+        # Add epoch and phase to metrics
+        wandb_metrics = {
+            f"{phase}/{name}": value for name, value in metrics.items()
+        }
+        wandb_metrics["epoch"] = epoch
+        wandb.log(wandb_metrics)
+
+    # Log to tensorboard if enabled
+    if writer is not None:
+        for name, value in metrics.items():
+            writer.add_scalar(f"{phase}/{name}", value, epoch)
+
+
+def log_images(images: Dict[str, torch.Tensor], epoch: int, config: Config,
+               writer=None) -> None:
+    """
+    Log images to tracking systems.
+
+    Args:
+        images: Dictionary of images
+        epoch: Current epoch
+        config: Training configuration
+        writer: TensorBoard writer
+    """
+    # Only log images at specified frequency
+    if epoch % config.get("logging.image_log_freq", 10) != 0:
+        return
+
+    # Log to wandb if enabled
+    if config.get("logging.wandb.enabled", False):
+        wandb_images = []
+        for name, tensor in images.items():
+            # Only log first 8 images in batch
+            for i in range(min(8, tensor.size(0))):
+                wandb_images.append(wandb.Image(
+                    tensor[i].cpu(),
+                    caption=f"{name}_{i}"
+                ))
+
+        wandb.log({f"images_epoch_{epoch}": wandb_images})
+
+    # Log to tensorboard if enabled
+    if writer is not None:
+        for name, tensor in images.items():
+            # Only log first 8 images in batch
+            tensor = tensor[:8]
+            writer.add_images(name, tensor, epoch)
+
+
+def train_epoch(model, dataloader, device, epoch, config, writer=None):
     """
     Train for one epoch.
 
@@ -90,139 +146,90 @@ def train_epoch(
         model: Model to train
         dataloader: Training dataloader
         device: Device to train on
-        epoch: Current epoch number
+        epoch: Current epoch
         config: Training configuration
-        writer: TensorBoard SummaryWriter
+        writer: TensorBoard writer
 
     Returns:
-        Dictionary with training metrics
+        Dictionary of training metrics
     """
     model.train()
+    metrics_tracker = MetricsTracker()
 
     # Progress tracking
-    log_interval = config["logging"]["log_interval"]
     total_batches = len(dataloader)
-
-    # Training metrics
-    metrics = {}
-    running_losses = {}
-
-    # Time tracking
     start_time = time.time()
-    batch_time = time.time()
+    log_interval = config.get("logging.log_interval", 100)
 
-    for batch_idx, data in enumerate(dataloader):
+    for batch_idx, data in enumerate(tqdm(dataloader, desc=f"Epoch {epoch}")):
         # Move data to device
         for k, v in data.items():
             if isinstance(v, torch.Tensor):
                 data[k] = v.to(device)
 
-        # Forward and backward pass
+        # Forward and optimize
         model.set_input(data)
         model.optimize_parameters()
 
-        # Get current losses
+        # Get and track current losses
         losses = model.get_current_losses()
-
-        # Update running losses
-        for loss_name, loss_value in losses.items():
-            if loss_name not in running_losses:
-                running_losses[loss_name] = 0.0
-            running_losses[loss_name] += loss_value
+        for name, value in losses.items():
+            metrics_tracker.update(name, value, data['A'].size(0))
 
         # Log progress
         if (batch_idx + 1) % log_interval == 0 or (batch_idx + 1) == total_batches:
-            elapsed_time = time.time() - batch_time
-            batch_time = time.time()
-
-            # Print progress
+            # Print progress and time
             progress = (batch_idx + 1) / total_batches * 100
-            print(f"Epoch {epoch:3d} [{batch_idx + 1:4d}/{total_batches:4d}] "
-                  f"({progress:5.1f}%) - "
-                  f"Time: {elapsed_time:.2f}s")
+            elapsed = time.time() - start_time
+            print(f"\rEpoch {epoch} [{batch_idx + 1}/{total_batches}] ({progress:.1f}%) - "
+                  f"Time: {elapsed:.2f}s", end="")
 
-            # Print losses
-            losses_str = " | ".join([f"{name}: {value:.4f}" for name, value in losses.items()])
-            print(f"  Losses: {losses_str}")
+            # Calculate and print current metrics
+            batch_metrics = model.get_current_losses()
+            metrics_str = " | ".join([f"{n}: {v:.4f}" for n, v in batch_metrics.items()])
+            print(f" | {metrics_str}", end="")
 
-            # Log to wandb if enabled
-            if config["logging"]["wandb"]["enabled"]:
-                # Add batch info to losses
-                losses_with_step = {
-                    f"train/{name}": value for name, value in losses.items()
-                }
-                losses_with_step["epoch"] = epoch
-                losses_with_step["batch"] = batch_idx
+            # Log to trackers
+            if config.get("logging.wandb.enabled", False):
+                wandb.log({
+                    f"train_batch/{n}": v for n, v in batch_metrics.items()
+                })
 
-                wandb.log(losses_with_step)
-
-            # Log to tensorboard if enabled
             if writer is not None:
-                global_step = (epoch - 1) * total_batches + batch_idx
-                for name, value in losses.items():
-                    writer.add_scalar(f"train/{name}", value, global_step)
+                step = (epoch - 1) * total_batches + batch_idx
+                for n, v in batch_metrics.items():
+                    writer.add_scalar(f"train_batch/{n}", v, step)
 
-    # Calculate average losses
-    for loss_name, loss_value in running_losses.items():
-        metrics[loss_name] = loss_value / total_batches
+    # End of epoch line break
+    print()
 
-    # Log average losses for the epoch
-    print(f"Epoch {epoch} completed in {time.time() - start_time:.2f}s")
-    print(f"  Average losses: {' | '.join([f'{name}: {value:.4f}' for name, value in metrics.items()])}")
-
-    return metrics
+    # Return averaged metrics
+    return metrics_tracker.compute()
 
 
-def validate(
-        model: nn.Module,
-        dataloader: DataLoader,
-        device: torch.device,
-        epoch: int,
-        config: Dict[str, Any],
-        writer: Optional[SummaryWriter] = None
-) -> Dict[str, float]:
+def validate(model, dataloader, device, epoch, config, writer=None):
     """
-    Validate model on validation set.
+    Validate model.
 
     Args:
         model: Model to validate
         dataloader: Validation dataloader
         device: Device to validate on
-        epoch: Current epoch number
+        epoch: Current epoch
         config: Validation configuration
-        writer: TensorBoard SummaryWriter
+        writer: TensorBoard writer
 
     Returns:
-        Dictionary with validation metrics
+        Dictionary of validation metrics
     """
     model.eval()
+    metrics_tracker = MetricsTracker()
 
-    # Validation metrics
-    val_metrics = {
-        'psnr': 0.0,
-        'ssim': 0.0,
-        'lpips': 0.0
-    }
-
-    # Initialize LPIPS model if needed
-    lpips_model = None
-    if 'lpips' in val_metrics:
-        try:
-            import lpips
-            lpips_model = lpips.LPIPS(net='alex').to(device)
-        except ImportError:
-            print("LPIPS not available. Install with: pip install lpips")
-
-    # Collect some generated images for visualization
-    num_vis_images = min(8, config["data"]["batch_size"])
-    vis_images = {
-        'real_A': [],
-        'fake_B': [],
-        'real_B': []
-    }
+    # Collect some images for visualization
+    vis_images = {}
 
     with torch.no_grad():
-        for batch_idx, data in enumerate(dataloader):
+        for batch_idx, data in enumerate(tqdm(dataloader, desc="Validation")):
             # Move data to device
             for k, v in data.items():
                 if isinstance(v, torch.Tensor):
@@ -232,291 +239,219 @@ def validate(
             model.set_input(data)
             output = model.test()
 
-            # Calculate metrics
-            fake_B = output['fake_B']
-            real_B = output['real_B']
+            # Calculate metrics if model has validation method
+            if hasattr(model, "compute_validation_metrics"):
+                metrics = model.compute_validation_metrics()
+                for name, value in metrics.items():
+                    metrics_tracker.update(name, value, data['A'].size(0))
 
-            # PSNR
-            val_metrics['psnr'] += compute_psnr(fake_B, real_B)
-
-            # SSIM
-            val_metrics['ssim'] += compute_ssim(fake_B, real_B)
-
-            # LPIPS
-            if lpips_model is not None:
-                val_metrics['lpips'] += compute_lpips(fake_B, real_B, lpips_model)
-
-            # Collect some images for visualization
+            # Collect first batch for visualization
             if batch_idx == 0:
-                for key in vis_images.keys():
-                    if key in output:
-                        for i in range(min(num_vis_images, output[key].size(0))):
-                            vis_images[key].append(output[key][i:i + 1])
+                for key, value in output.items():
+                    if isinstance(value, torch.Tensor):
+                        vis_images[key] = value.cpu()
 
-    # Average metrics
-    for key in val_metrics:
-        val_metrics[key] /= len(dataloader)
+    # Log images
+    log_images(vis_images, epoch, config, writer)
 
-    # Log metrics
-    print(f"Validation Epoch {epoch}:")
-    print(f"  PSNR: {val_metrics['psnr']:.4f} | SSIM: {val_metrics['ssim']:.4f} | LPIPS: {val_metrics['lpips']:.4f}")
-
-    # Log to wandb if enabled
-    if config["logging"]["wandb"]["enabled"]:
-        # Prepare metrics for wandb
-        wandb_metrics = {
-            f"val/{key}": value for key, value in val_metrics.items()
-        }
-        wandb_metrics["epoch"] = epoch
-
-        # Log metrics
-        wandb.log(wandb_metrics)
-
-        # Log images
-        if config["logging"]["image_log_freq"] > 0 and epoch % config["logging"]["image_log_freq"] == 0:
-            # Log A->B direction
-            wandb_images = []
-            for i in range(len(vis_images['real_A'])):
-                wandb_images.append(wandb.Image(
-                    vis_images['real_A'][i],
-                    caption=f"Input {i}"
-                ))
-                wandb_images.append(wandb.Image(
-                    vis_images['fake_B'][i],
-                    caption=f"Generated {i}"
-                ))
-                wandb_images.append(wandb.Image(
-                    vis_images['real_B'][i],
-                    caption=f"Target {i}"
-                ))
-
-            wandb.log({f"val/images_epoch_{epoch}": wandb_images})
-
-    # Log to tensorboard if enabled
-    if writer is not None:
-        for key, value in val_metrics.items():
-            writer.add_scalar(f"val/{key}", value, epoch)
-
-        # Log images
-        if config["logging"]["image_log_freq"] > 0 and epoch % config["logging"]["image_log_freq"] == 0:
-            # Create image grids for each type
-            for key, images in vis_images.items():
-                if images:
-                    writer.add_images(f"val/{key}", torch.cat(images, 0), epoch)
-
-    # Save some validation images
-    if config["logging"]["image_log_freq"] > 0 and epoch % config["logging"]["image_log_freq"] == 0:
-        # Create directory for images
-        image_dir = Path(config["logging"]["log_dir"]) / f"images_epoch_{epoch}"
-        ensure_dir(image_dir)
-
-        # Save image grid
-        grid_path = image_dir / "image_grid.png"
-
-        # Combine images: [real_A, fake_B, real_B] for each sample
-        grid_images = []
-        for i in range(len(vis_images['real_A'])):
-            grid_images.extend([
-                vis_images['real_A'][i],
-                vis_images['fake_B'][i],
-                vis_images['real_B'][i]
-            ])
-
-        save_image_grid(grid_images, grid_path, nrow=3)
-
-    return val_metrics
+    # Return metrics
+    return metrics_tracker.compute()
 
 
-def train(config: Dict[str, Any], model_type: str) -> Dict[str, float]:
+def train(config: Config) -> Dict[str, float]:
     """
     Train model according to configuration.
 
     Args:
         config: Training configuration
-        model_type: Type of model to train
 
     Returns:
-        Dictionary with final metrics
+        Dictionary of final metrics
     """
-    # Set up training environment
-    device = setup_environment(config)
+    # Set random seed
+    seed = config.get("seed", 42)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    # Create unique run name for logging
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = model_type
-    if "name" in config and config["name"]:
-        run_name = f"{run_name}_{config['name']}"
-    run_name = f"{run_name}_{timestamp}"
+    # Set up device
+    gpu_ids = config.get("gpu_ids", "")
+    if isinstance(gpu_ids, str):
+        gpu_ids = [int(id) for id in gpu_ids.split(',') if id.strip()]
 
-    # Update config with run name
-    config["run_name"] = run_name
+    if torch.cuda.is_available() and gpu_ids:
+        device = torch.device(f'cuda:{gpu_ids[0]}')
+    else:
+        device = torch.device('cpu')
 
-    # Set up wandb if enabled
-    if config["logging"]["wandb"]["enabled"]:
-        wandb_config = config["logging"]["wandb"]
-        wandb.init(
-            project=wandb_config.get("project", "mrsynth2"),
-            entity=wandb_config.get("entity"),
-            name=wandb_config.get("name", run_name),
-            config=config,
-            tags=wandb_config.get("tags", []) + [model_type],
-            notes=wandb_config.get("notes", "")
-        )
+    print(f"Using device: {device}")
 
-    # Set up tensorboard if enabled
-    writer = None
-    if config["logging"]["tensorboard"]:
-        log_dir = Path(config["logging"]["log_dir"]) / run_name
-        writer = SummaryWriter(log_dir=log_dir)
-
-    # Create save directory for this run
-    save_dir = Path(config["logging"]["save_model_dir"]) / run_name
-    ensure_dir(save_dir)
-
-    # Save merged configuration
-    config_path = save_dir / "config.json"
-    save_json(config, str(config_path))
+    # Set up logging
+    writer = setup_logging(config)
 
     # Create datasets and dataloaders
     print("Creating datasets...")
-    datasets = create_datasets(config)
-    dataloaders = create_dataloaders(datasets, config)
+    datasets = create_datasets(config.to_dict())
+    dataloaders = create_dataloaders(datasets, config.to_dict())
 
     # Print dataset sizes
     for split, dataset in datasets.items():
         print(f"  {split} dataset: {len(dataset)} samples")
 
-    # Create and initialize model
-    print(f"Creating {model_type} model...")
-    model = get_model(config, device)
+    # Create model
+    print(f"Creating {config['model']['name']} model...")
+    model = create_model(config.to_dict(), device)
 
     # Set up early stopping
-    early_stopping = EarlyStopping(
-        patience=config["training"]["early_stopping"]["patience"],
-        min_delta=config["training"]["early_stopping"]["min_delta"],
-        mode="max"  # Higher PSNR/SSIM is better
-    )
+    early_stopping = None
+    if config.get("training.early_stopping.enabled", False):
+        patience = config.get("training.early_stopping.patience", 10)
+        min_delta = config.get("training.early_stopping.min_delta", 0.0)
+        mode = config.get("training.early_stopping.mode", "min")
+        early_stopping = EarlyStopping(patience, min_delta, mode)
 
     # Training loop
-    print(f"Starting training for {config['training']['num_epochs']} epochs...")
-    best_metric = 0.0
-    final_metrics = {}
+    num_epochs = config.get("training.num_epochs", 100)
+    best_metric = float('-inf') if early_stopping and early_stopping.mode == 'max' else float('inf')
+    best_epoch = 0
 
-    # Run initial validation to get baseline metrics
+    # Run initial validation if available
+    validation_metric_name = config.get("training.validation_metric", "psnr")
     if "val" in dataloaders:
         print("Running initial validation...")
         val_metrics = validate(model, dataloaders["val"], device, 0, config, writer)
-        best_metric = val_metrics["psnr"]  # Use PSNR as the main metric
+        log_metrics(val_metrics, 0, config, "val", writer)
 
-    for epoch in range(1, config["training"]["num_epochs"] + 1):
-        print(f"\nEpoch {epoch}/{config['training']['num_epochs']}")
+        if validation_metric_name in val_metrics:
+            current_metric = val_metrics[validation_metric_name]
+            if early_stopping and early_stopping.mode == 'max':
+                best_metric = max(best_metric, current_metric)
+            else:
+                best_metric = min(best_metric, current_metric)
+
+    # Main training loop
+    for epoch in range(1, num_epochs + 1):
+        print(f"\nEpoch {epoch}/{num_epochs}")
 
         # Train for one epoch
         train_metrics = train_epoch(model, dataloaders["train"], device, epoch, config, writer)
+        log_metrics(train_metrics, epoch, config, "train", writer)
 
-        # Validate on validation set
+        # Validate
         if "val" in dataloaders:
             val_metrics = validate(model, dataloaders["val"], device, epoch, config, writer)
+            log_metrics(val_metrics, epoch, config, "val", writer)
 
             # Check for improvement
-            current_metric = val_metrics["psnr"]
-            improved, should_stop = early_stopping(current_metric)
+            if validation_metric_name in val_metrics:
+                current_metric = val_metrics[validation_metric_name]
+                improved = False
 
-            if improved:
-                print(f"  New best model with PSNR: {current_metric:.4f}")
-                best_metric = current_metric
+                if early_stopping:
+                    improved, should_stop = early_stopping(current_metric)
 
-                # Save best model
-                model_path = save_dir / "best_model.pth"
-                if hasattr(model, "save_networks"):
-                    model.save_networks("best")
+                    if should_stop:
+                        print(f"Early stopping triggered at epoch {epoch}")
+                        break
                 else:
-                    save_model(model, str(model_path))
+                    # Manual improvement check
+                    if early_stopping and early_stopping.mode == 'max':
+                        improved = current_metric > best_metric
+                    else:
+                        improved = current_metric < best_metric
 
-                # Update best metrics
-                final_metrics = val_metrics
+                if improved:
+                    print(f"  New best model with {validation_metric_name}: {current_metric:.4f}")
+                    best_metric = current_metric
+                    best_epoch = epoch
 
-            if should_stop:
-                print(f"Early stopping triggered at epoch {epoch}")
-                break
+                    # Save best model
+                    save_path = Path(config.get("logging.save_model_dir")) / "best_model.pth"
+                    if hasattr(model, "save_networks"):
+                        model.save_networks("best")
+                    else:
+                        torch.save(model.state_dict(), save_path)
 
-        # Save latest model
-        if epoch % config["logging"].get("save_freq", 10) == 0:
+        # Save checkpoint
+        if epoch % config.get("logging.save_freq", 10) == 0:
+            # Save model checkpoint
             if hasattr(model, "save_networks"):
-                model.save_networks(epoch)
+                model.save_networks(f"epoch_{epoch}")
             else:
-                model_path = save_dir / f"model_epoch_{epoch}.pth"
-                save_model(model, str(model_path))
+                save_path = Path(config.get("logging.save_model_dir")) / f"model_epoch_{epoch}.pth"
+                torch.save(model.state_dict(), save_path)
 
-        # Update learning rate
+        # Update learning rate if scheduler exists
         if hasattr(model, "update_learning_rate"):
-            model.update_learning_rate(val_metrics["psnr"] if "val" in dataloaders else None)
+            if "val" in dataloaders and validation_metric_name in val_metrics:
+                model.update_learning_rate(val_metrics[validation_metric_name])
+            else:
+                model.update_learning_rate()
 
-    # Save final model
-    if hasattr(model, "save_networks"):
-        model.save_networks("latest")
-    else:
-        model_path = save_dir / "final_model.pth"
-        save_model(model, str(model_path))
-
-    # Test on test set if available
+    # Final evaluation on test set
+    final_metrics = {}
     if "test" in dataloaders:
         print("\nEvaluating on test set...")
-        test_metrics = validate(model, dataloaders["test"], device, config["training"]["num_epochs"], config, writer)
-        final_metrics.update({f"test_{k}": v for k, v in test_metrics.items()})
+        test_metrics = validate(model, dataloaders["test"], device, num_epochs, config, writer)
+        log_metrics(test_metrics, num_epochs, config, "test", writer)
+        final_metrics.update(test_metrics)
 
-    # Close wandb and tensorboard
-    if config["logging"]["wandb"]["enabled"]:
-        # Log final metrics
-        wandb.log({"final_psnr": final_metrics.get("psnr", 0.0),
-                   "final_ssim": final_metrics.get("ssim", 0.0),
-                   "best_metric": best_metric})
+    # Save final model
+    save_path = Path(config.get("logging.save_model_dir")) / "final_model.pth"
+    if hasattr(model, "save_networks"):
+        model.save_networks("final")
+    else:
+        torch.save(model.state_dict(), save_path)
 
-        # Finish wandb run
-        wandb.finish()
-
+    # Clean up
     if writer is not None:
         writer.close()
 
-    print("\nTraining completed!")
-    print(f"Best model saved with PSNR: {best_metric:.4f}")
+    if config.get("logging.wandb.enabled", False):
+        wandb.finish()
+
+    # Print final statistics
+    print(f"\nTraining completed!")
+    print(f"Best {validation_metric_name}: {best_metric:.4f} at epoch {best_epoch}")
 
     return final_metrics
 
 
 def main():
-    """Main function"""
-    # Parse arguments
-    args = parse_args()
+    """Main function for training."""
+    # Create argument parser
+    parser = argparse.ArgumentParser(description="Train image-to-image translation models")
 
-    # Load merged configuration
-    config = load_model_config(args.model_type, args.base_config)
+    # Add model-specific arguments
+    parser.add_argument("--model_type", type=str, required=True,
+                        choices=["cyclegan", "pix2pix", "diffusion", "latent_diffusion", "vae"],
+                        help="Type of model to train")
+    parser.add_argument("--base_config", type=str, default=None,
+                        help="Path to base config file")
+    parser.add_argument("--dataset_dir", type=str,
+                        help="Directory containing dataset")
+    parser.add_argument("--batch_size", type=int,
+                        help="Batch size for training")
+    parser.add_argument("--num_epochs", type=int,
+                        help="Number of training epochs")
+    parser.add_argument("--output_dir", type=str,
+                        help="Directory to save outputs")
+    parser.add_argument("--no_wandb", action="store_true",
+                        help="Disable wandb logging")
 
-    # Override config with command line arguments
-    for arg_name in ['name', 'gpu_ids', 'batch_size', 'num_epochs', 'seed', 'output_dir']:
-        arg_value = getattr(args, arg_name)
-        if arg_value is not None:
-            if arg_name == 'batch_size':
-                config['data']['batch_size'] = arg_value
-            elif arg_name == 'num_epochs':
-                config['training']['num_epochs'] = arg_value
-            elif arg_name == 'output_dir':
-                config['logging']['save_model_dir'] = os.path.join(arg_value, 'saved_models')
-                config['logging']['log_dir'] = os.path.join(arg_value, 'logs')
-            else:
-                config[arg_name] = arg_value
+    # Parse arguments and load config
+    config = parse_args_and_config(parser)
 
-    # Disable wandb if requested
+    # Override config settings from command line
     if args.no_wandb:
-        config['logging']['wandb']['enabled'] = False
+        config["logging.wandb.enabled"] = False
+
+    if args.output_dir:
+        config["logging.save_model_dir"] = os.path.join(args.output_dir, "saved_models")
+        config["logging.log_dir"] = os.path.join(args.output_dir, "logs")
 
     # Train model
-    metrics = train(config, args.model_type)
-
-    # Print final metrics
-    print("\nFinal metrics:")
-    for name, value in metrics.items():
-        print(f"  {name}: {value:.4f}")
+    train(config)
 
 
 if __name__ == "__main__":

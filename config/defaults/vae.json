@@ -20,6 +20,22 @@
     }
   },
   "data": {
+    "dataset_mode": "aligned",
     "batch_size": 16
+  },
+  "training": {
+    "optimizer": {
+      "name": "adam",
+      "lr": 0.0002,
+      "beta1": 0.5,
+      "beta2": 0.999
+    },
+    "scheduler": {
+      "name": "step",
+      "params": {
+        "step_size": 30,
+        "gamma": 0.5
+      }
+    }
   }
 }
