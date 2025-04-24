@@ -7,8 +7,8 @@ import torchvision.transforms as transforms
 import random
 from PIL import Image
 
-from src.utils.dataclass import ImageTranslationDataset
-from src.utils.io import load_pickle
+from utils.dataclass import ImageTranslationDataset
+from utils.io import load_pickle
 
 
 def prepare_transforms(config: Dict[str, Any]) -> Dict[str, transforms.Compose]:

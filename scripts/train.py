@@ -16,10 +16,10 @@ import wandb
 from torch.utils.tensorboard import SummaryWriter
 
 # Import utilities
-from src.utils.io import ensure_dir, save_model, save_json, save_image_grid
-from src.utils.config import load_model_config
-from src.utils.metrics import compute_psnr, compute_ssim, compute_lpips, EarlyStopping
-from src.data_loader import create_datasets, create_dataloaders
+from utils.io import ensure_dir, save_model, save_json, save_image_grid
+from utils.config import load_model_config
+from utils.metrics import compute_psnr, compute_ssim, compute_lpips, EarlyStopping
+from utils.data_loader import create_datasets, create_dataloaders
 from models.model_factory import get_model
 
 
@@ -27,7 +27,7 @@ def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Train image-to-image translation models')
     parser.add_argument('--model_type', type=str, required=True,
-                        choices=['cyclegan', 'pix2pix.json', 'diffusion.json', 'latent_diffusion', 'vae'],
+                        choices=['cyclegan', 'pix2pix.json', 'diffusion.json', 'latent_diffusion.json', 'vae'],
                         help='Model type to train')
     parser.add_argument('--base_config', type=str, default='config/base.json',
                         help='Path to base config file')

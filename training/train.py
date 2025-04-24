@@ -10,13 +10,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data import create_dataset
 from models import create_model
-from src.utils.visualizer import Visualizer
-from src.utils.cache import check_cache, get_cached_data
+from utils.cache import check_cache, get_cached_data
 
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Train CycleGAN/pix2pix.json')
+    parser = argparse.ArgumentParser(description='Train CycleGAN/pix2pix')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--dataroot', type=str, help='Path to dataset (overrides config)')
     parser.add_argument('--name', type=str, help='Name of the experiment (overrides config)')
@@ -31,6 +30,18 @@ def load_config(config_path):
     """Load configuration from JSON file"""
     with open(config_path, 'r') as f:
         return json.load(f)
+
+
+def initialize_visualization(opt):
+    """Initialize visualization based on options (wandb or Visualizer)"""
+    use_wandb = opt.get('use_wandb', False)
+    if use_wandb:
+        import wandb
+        wandb.init(project=opt.get('wandb_project_name', 'pytorch-CycleGAN-and-pix2pix'),
+                   name=opt.get('name', 'experiment'),
+                   config=opt)
+        return None, True
+
 
 
 def train_model(opt):
@@ -63,15 +74,8 @@ def train_model(opt):
     model = create_model(opt)
     model.setup(opt)
 
-    # Create visualizer
-    visualizer = Visualizer(opt)
-
-    # Initialize wandb if enabled
-    if opt.get('use_wandb', False):
-        import wandb
-        wandb.init(project=opt.get('wandb_project_name', 'pytorch-CycleGAN-and-pix2pix.json'),
-                   name=opt.get('name', 'experiment'),
-                   config=opt)
+    # Initialize visualization (wandb or visualizer)
+    visualizer, use_wandb = initialize_visualization(opt)
 
     # Initialize metrics
     metrics = {
@@ -92,7 +96,10 @@ def train_model(opt):
         epoch_start_time = time.time()
         iter_data_time = time.time()
         epoch_iter = 0
-        visualizer.reset()
+
+        # Reset visualizer if not using wandb
+        if not use_wandb:
+            visualizer.reset()
 
         # Train for one epoch
         model.train()
@@ -111,21 +118,46 @@ def train_model(opt):
 
             # Display and logging
             if total_iters % opt.get('display_freq', 400) == 0:
-                save_result = total_iters % opt.get('update_html_freq', 1000) == 0
                 model.compute_visuals()
-                visualizer.display_current_results(model.get_current_visuals(), epoch, save_result)
+                visuals = model.get_current_visuals()
+
+                # Use wandb for visualization if enabled
+                if use_wandb:
+                    import wandb
+                    wandb_images = {}
+                    for label, image in visuals.items():
+                        wandb_images[label] = wandb.Image(image)
+                    wandb.log({"images": wandb_images}, step=total_iters)
+                else:
+                    # Fall back to Visualizer if wandb not used
+                    save_result = total_iters % opt.get('update_html_freq', 1000) == 0
+                    visualizer.display_current_results(visuals, epoch, save_result)
 
             # Print losses
             if total_iters % opt.get('print_freq', 100) == 0:
                 losses = model.get_current_losses()
                 t_comp = (time.time() - iter_start_time) / opt.get('batch_size', 1)
-                visualizer.print_current_losses(epoch, epoch_iter, losses, t_comp, t_data)
-                if opt.get('display_id', 0) > 0:
-                    visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
+
+                # Log losses to console
+                if not use_wandb:
+                    visualizer.print_current_losses(epoch, epoch_iter, losses, t_comp, t_data)
+                    if opt.get('display_id', 0) > 0:
+                        visualizer.plot_current_losses(epoch, float(epoch_iter) / dataset_size, losses)
+                else:
+                    # Simple console logging when using wandb
+                    loss_str = ' | '.join([f"{k}: {v:.3f}" for k, v in losses.items()])
+                    print(f"Epoch: {epoch} | Iter: {epoch_iter}/{dataset_size} | {loss_str} | Time: {t_comp:.3f}s")
 
                 # Log to wandb
-                if opt.get('use_wandb', False):
-                    wandb.log(losses)
+                if use_wandb:
+                    import wandb
+                    # Add epoch info to losses
+                    losses.update({
+                        'epoch': epoch,
+                        'iteration': total_iters,
+                        'epoch_progress': float(epoch_iter) / dataset_size
+                    })
+                    wandb.log(losses, step=total_iters)
 
             # Save latest model
             if total_iters % opt.get('save_latest_freq', 5000) == 0:
@@ -143,8 +175,14 @@ def train_model(opt):
 
             # Log validation metrics
             print(f"Validation results: {val_losses}")
-            if opt.get('use_wandb', False):
-                wandb.log(val_losses)
+            if use_wandb:
+                import wandb
+                # Add epoch info
+                val_losses.update({
+                    'epoch': epoch,
+                    'is_validation': True
+                })
+                wandb.log(val_losses, step=total_iters)
 
             # Update learning rate
             model.update_learning_rate(val_losses.get('PSNR', None))
@@ -160,6 +198,12 @@ def train_model(opt):
                 print(f"New best model with PSNR: {best_metric:.4f}")
                 model.save_networks('best')
 
+                # Log best model to wandb
+                if use_wandb:
+                    import wandb
+                    wandb.run.summary["best_psnr"] = best_metric
+                    wandb.run.summary["best_epoch"] = best_epoch
+
         # Save model for each epoch
         if epoch % opt.get('save_epoch_freq', 5) == 0:
             print(f'saving the model at the end of epoch {epoch}, iters {total_iters}')
@@ -168,6 +212,12 @@ def train_model(opt):
 
         print(
             f'End of epoch {epoch} / {opt.get("n_epochs", 100) + opt.get("n_epochs_decay", 100)} \t Time Taken: {time.time() - epoch_start_time:.0f} sec')
+
+    # Log final metrics to wandb
+    if use_wandb:
+        import wandb
+        wandb.run.summary["final_validation_metric"] = metrics['validation_metric']
+        wandb.finish()
 
     return metrics
 

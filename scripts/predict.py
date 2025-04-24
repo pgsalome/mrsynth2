@@ -6,9 +6,9 @@ from typing import Dict, Any, Optional
 from PIL import Image
 import torchvision.transforms as transforms
 
-from src.utils.io import ensure_dir, save_image
-from src.utils.config import read_json_config
-from src.utils.metrics import compute_psnr, compute_ssim
+from utils.io import ensure_dir, save_image
+from utils.config import read_json_config
+from utils.metrics import compute_psnr, compute_ssim
 from models.model_factory import load_model_from_checkpoint
 
 

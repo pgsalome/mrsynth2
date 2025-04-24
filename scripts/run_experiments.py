@@ -16,8 +16,8 @@ from optuna.trial import Trial
 # Import wandb for handling runs
 import wandb
 
-from src.utils.io import ensure_dir
-from src.utils.config import load_model_config
+from utils.io import ensure_dir
+from utils.config import load_model_config
 from scripts.train import train
 
 
@@ -221,7 +221,7 @@ def define_parameter_space(trial: Trial, model_type: str) -> Dict[str, Any]:
         return define_parameter_space_pix2pix(trial)
     elif model_type == "diffusion.json":
         return define_parameter_space_diffusion(trial)
-    elif model_type == "latent_diffusion":
+    elif model_type == "latent_diffusion.json":
         return define_parameter_space_latent_diffusion(trial)
     elif model_type == "vae":
         return define_parameter_space_vae(trial)
@@ -629,7 +629,7 @@ def parse_args():
     parser.add_argument("--mode", type=str, choices=["single", "all"], default="single",
                         help="Mode: 'single' for optimizing one model, 'all' for all models")
     parser.add_argument("--model_type", type=str,
-                        choices=["cyclegan", "pix2pix.json", "diffusion.json", "latent_diffusion", "vae"],
+                        choices=["cyclegan", "pix2pix.json", "diffusion.json", "latent_diffusion.json", "vae"],
                         default="cyclegan", help="Model type to optimize (for 'single' mode)")
     parser.add_argument("--n_trials", type=int, default=20, help="Number of optimization trials per model")
     parser.add_argument("--storage", type=str, help="Storage URL for Optuna (e.g., 'sqlite:///optuna.db')")
@@ -661,7 +661,7 @@ def main():
         )
     elif args.mode == "all":
         # Run optimization for all model types
-        model_types = ["cyclegan", "pix2pix.json", "diffusion.json", "latent_diffusion", "vae"]
+        model_types = ["cyclegan", "pix2pix.json", "diffusion.json", "latent_diffusion.json", "vae"]
         run_all_model_optimizations(
             model_types=model_types,
             base_config_path=args.base_config,

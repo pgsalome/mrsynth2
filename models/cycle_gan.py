@@ -5,8 +5,8 @@ from typing import Dict, Any
 
 from models.generator import get_generator
 from models.discriminator import get_discriminator
-from src.utils.image_pool import ImagePool
-from src.utils.perceptual_loss import PerceptualLoss
+from utils.image_pool import ImagePool
+from utils.perceptual_loss import PerceptualLoss
 
 
 class CycleGANModel(nn.Module):

@@ -5,7 +5,7 @@ import os
 
 from models.generator import get_generator
 from models.discriminator import get_discriminator
-from src.utils.perceptual_loss import PerceptualLoss
+from utils.perceptual_loss import PerceptualLoss
 
 
 class Pix2PixModel(nn.Module):
@@ -353,13 +353,13 @@ class Pix2PixModel(nn.Module):
 
                 # Compute PSNR
                 if 'psnr' in metrics:
-                    from src.utils.metrics import compute_psnr
+                    from utils.metrics import compute_psnr
                     psnr = compute_psnr(self.fake_B, self.real_B)
                     validation_metrics['val_psnr'] += psnr
 
                 # Compute SSIM
                 if 'ssim' in metrics:
-                    from src.utils.metrics import compute_ssim
+                    from utils.metrics import compute_ssim
                     ssim = compute_ssim(self.fake_B, self.real_B)
                     validation_metrics['val_ssim'] += ssim
 

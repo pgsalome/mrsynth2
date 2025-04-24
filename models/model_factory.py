@@ -27,7 +27,7 @@ def get_model(config: Dict[str, Any], device: Optional[torch.device] = None) -> 
         model = Pix2PixModel(config)
     elif model_name == "diffusion.json":
         model = DiffusionModel(config)
-    elif model_name == "latent_diffusion":
+    elif model_name == "latent_diffusion.json":
         model = LatentDiffusionModel(config)
     elif model_name == "vae":
         model = VAEModel(config)
@@ -67,7 +67,7 @@ def load_model_from_checkpoint(
         Loaded model
     """
     from pathlib import Path
-    from src.utils.io import read_json_config
+    from utils.io import read_json_config
 
     # Determine device if not provided
     if device is None:
