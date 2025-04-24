@@ -1,5 +1,5 @@
-import os
-import random
+"""Dataset for aligned image pairs (Pix2Pix)."""
+
 from pathlib import Path
 import torch.utils.data as data
 from PIL import Image

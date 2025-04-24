@@ -1,427 +1,235 @@
 import os
 import torch
 from pathlib import Path
-from typing import Dict, Any
-from torch.utils.data import DataLoader, Dataset, random_split
-import torchvision.transforms as transforms
-import random
-from PIL import Image
-
-from utils.dataclass import ImageTranslationDataset
-from utils.io import load_pickle
+from typing import Dict, Any, List, Optional, Union, Tuple
+import numpy as np
 
 
-def prepare_transforms(config: Dict[str, Any]) -> Dict[str, transforms.Compose]:
+class ImagePair:
     """
-    Prepare image transformations for training, validation, and test sets.
-
-    Args:
-        config: Configuration dictionary containing image size and augmentation parameters.
-
-    Returns:
-        Dictionary with train, val, and test transform pipelines.
-    """
-    img_size = config["data"]["img_size"]
-    load_size = int(img_size * 1.1)  # Make load size a bit larger for random cropping
-    no_flip = config["data"].get("no_flip", False)
-
-    # Training transforms with augmentation
-    train_transforms = []
-    train_transforms.append(
-        transforms.Resize((load_size, load_size), interpolation=transforms.InterpolationMode.BICUBIC))
-    train_transforms.append(transforms.RandomCrop((img_size, img_size)))
-    if not no_flip:
-        train_transforms.append(transforms.RandomHorizontalFlip())
-    train_transforms.append(transforms.ToTensor())
-    train_transforms.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
-    train_transform = transforms.Compose(train_transforms)
-
-    # Validation/test transforms without augmentation
-    val_transforms = []
-    val_transforms.append(transforms.Resize((img_size, img_size), interpolation=transforms.InterpolationMode.BICUBIC))
-    val_transforms.append(transforms.ToTensor())
-    val_transforms.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
-    val_transform = transforms.Compose(val_transforms)
-
-    return {
-        "train": train_transform,
-        "val": val_transform,
-        "test": val_transform
-    }
-
-
-def create_datasets(config: Dict[str, Any]) -> Dict[str, Dataset]:
-    """
-    Create training, validation, and test datasets.
-
-    Args:
-        config: Configuration dictionary
-
-    Returns:
-        Dictionary mapping split names to dataset objects
-    """
-    # Get image directories
-    data_dir = Path(config["data"]["dataset_dir"])
-    dataset_mode = config["data"].get("dataset_mode", "aligned")
-    direction = config["data"].get("direction", "AtoB")
-
-    # Prepare transformations
-    transforms_dict = prepare_transforms(config)
-
-    # Check if using existing preprocessed dataset pickle
-    if config["data"].get("dataset_name", "").endswith(".pkl") and os.path.exists(
-            data_dir / config["data"]["dataset_name"]):
-        print(f"Loading preprocessed dataset from {data_dir / config['data']['dataset_name']}")
-        dataset = load_pickle(str(data_dir / config["data"]["dataset_name"]))
-
-        # Split dataset
-        train_ratio = config["data"]["train_split"]
-        val_ratio = config["data"]["val_split"]
-        test_ratio = config["data"]["test_split"]
-
-        # Ensure ratios sum to 1
-        total_ratio = train_ratio + val_ratio + test_ratio
-        train_ratio /= total_ratio
-        val_ratio /= total_ratio
-        test_ratio /= total_ratio
-
-        # Split dataset
-        total_size = len(dataset)
-        train_size = int(total_size * train_ratio)
-        val_size = int(total_size * val_ratio)
-        test_size = total_size - train_size - val_size
-
-        train_dataset, val_dataset, test_dataset = random_split(
-            dataset, [train_size, val_size, test_size],
-            generator=torch.Generator().manual_seed(config["seed"])
-        )
-
-        # Create dataset objects
-        train_dataset = ImageTranslationDataset(train_dataset, transform=transforms_dict["train"])
-        val_dataset = ImageTranslationDataset(val_dataset, transform=transforms_dict["val"])
-        test_dataset = ImageTranslationDataset(test_dataset, transform=transforms_dict["test"])
-
-    else:
-        # Create dataset based on dataset_mode
-        if dataset_mode == 'aligned':
-            # For aligned datasets (pix2pix.json)
-            train_dataset = AlignedDataset(
-                root=data_dir,
-                phase='train',
-                transform=transforms_dict["train"],
-                direction=direction
-            )
-
-            val_dataset = AlignedDataset(
-                root=data_dir,
-                phase='val',
-                transform=transforms_dict["val"],
-                direction=direction
-            )
-
-            test_dataset = AlignedDataset(
-                root=data_dir,
-                phase='test',
-                transform=transforms_dict["test"],
-                direction=direction
-            )
-
-        elif dataset_mode == 'unaligned':
-            # For unaligned datasets (CycleGAN)
-            train_dataset = UnalignedDataset(
-                root=data_dir,
-                phase='train',
-                transform=transforms_dict["train"],
-                direction=direction
-            )
-
-            val_dataset = UnalignedDataset(
-                root=data_dir,
-                phase='val',
-                transform=transforms_dict["val"],
-                direction=direction
-            )
-
-            test_dataset = UnalignedDataset(
-                root=data_dir,
-                phase='test',
-                transform=transforms_dict["test"],
-                direction=direction
-            )
-
-        elif dataset_mode == 'single':
-            # For inference on single images
-            train_dataset = None
-            val_dataset = None
-
-            test_dataset = SingleDataset(
-                root=data_dir,
-                transform=transforms_dict["test"],
-                direction=direction
-            )
-
-        else:
-            raise ValueError(f"Dataset mode {dataset_mode} not supported")
-
-    datasets = {}
-    if train_dataset is not None:
-        datasets["train"] = train_dataset
-    if val_dataset is not None:
-        datasets["val"] = val_dataset
-    if test_dataset is not None:
-        datasets["test"] = test_dataset
-
-    # Print dataset sizes
-    print(f"Dataset sizes:")
-    for split, dataset in datasets.items():
-        print(f"  {split}: {len(dataset)}")
-
-    return datasets
-
-
-def create_dataloaders(datasets: Dict[str, Dataset], config: Dict[str, Any]) -> Dict[str, DataLoader]:
-    """
-    Create dataloaders for datasets.
-
-    Args:
-        datasets: Dictionary mapping split names to dataset objects
-        config: Configuration dictionary
-
-    Returns:
-        Dictionary mapping split names to dataloader objects
-    """
-    batch_size = config["data"]["batch_size"]
-    num_workers = config["data"]["num_workers"]
-    shuffle = config["data"]["shuffle"]
-
-    dataloaders = {}
-
-    for split, dataset in datasets.items():
-        # Only shuffle training data
-        should_shuffle = shuffle if split == "train" else False
-
-        dataloaders[split] = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=should_shuffle,
-            num_workers=num_workers,
-            pin_memory=True
-        )
-
-    return dataloaders
-
-
-class AlignedDataset(Dataset):
-    """
-    Dataset class for aligned image domains (pix2pix.json).
-
-    This dataset assumes that the images in domain A and B are aligned and stored as side-by-side images.
+    Class representing a pair of input and target images for image-to-image translation.
     """
 
-    def __init__(self, root, phase='train', transform=None, direction='AtoB', max_dataset_size=float("inf")):
+    def __init__(
+            self,
+            input_img: np.ndarray,
+            target_img: np.ndarray,
+            input_path: Optional[str] = None,
+            target_path: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None
+    ):
         """
-        Initialize the dataset.
+        Initialize an image pair.
 
         Args:
-            root: Root directory containing the images
-            phase: 'train', 'val', or 'test'
-            transform: Image transformations to apply
-            direction: 'AtoB' or 'BtoA' - which side of the image is the input
-            max_dataset_size: Maximum number of images to use
+            input_img: Input image as numpy array
+            target_img: Target image as numpy array
+            input_path: Path to input image (optional)
+            target_path: Path to target image (optional)
+            metadata: Additional metadata (optional)
         """
-        self.root = Path(root)
-        self.phase = phase
-        self.transform = transform
-        self.direction = direction
-        self.max_dataset_size = max_dataset_size
+        self.input_img = input_img
+        self.target_img = target_img
+        self.input_path = input_path
+        self.target_path = target_path
+        self.metadata = metadata or {}
 
-        # Find the image directory
-        self.dir = self.root / phase
-        if not self.dir.exists():
-            raise ValueError(f"Directory {self.dir} does not exist")
-
-        # Get all image paths
-        self.image_paths = sorted([p for p in self.dir.glob('*.jpg') if p.is_file()])
-        self.image_paths.extend(sorted([p for p in self.dir.glob('*.png') if p.is_file()]))
-
-        # Limit dataset size
-        self.image_paths = self.image_paths[:min(len(self.image_paths), int(max_dataset_size))]
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, index):
-        """Return a data point and its metadata information.
-
-        Parameters:
-            index - a random integer for data indexing
-
-        Returns a dictionary that contains A, B, A_paths and B_paths
-            A (tensor) - an image in the input domain
-            B (tensor) - its corresponding image in the target domain
-            A_paths (str) - image paths
-            B_paths (str) - image paths
+    def to_tensors(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        # Read image
-        path = str(self.image_paths[index])
-        img = Image.open(path).convert('RGB')
+        Convert images to PyTorch tensors.
 
-        # Split A and B images
-        w, h = img.size
-        w2 = int(w / 2)
+        Returns:
+            Tuple of (input_tensor, target_tensor)
+        """
+        # Convert to float32
+        input_float = self.input_img.astype(np.float32)
+        target_float = self.target_img.astype(np.float32)
 
-        if self.direction == 'AtoB':
-            img_A = img.crop((0, 0, w2, h))
-            img_B = img.crop((w2, 0, w, h))
-        else:
-            img_A = img.crop((w2, 0, w, h))
-            img_B = img.crop((0, 0, w2, h))
+        # Normalize to [0, 1] if needed
+        if input_float.max() > 1.0:
+            input_float = input_float / 255.0
+        if target_float.max() > 1.0:
+            target_float = target_float / 255.0
 
-        # Apply transformations
-        if self.transform:
-            img_A = self.transform(img_A)
-            img_B = self.transform(img_B)
+        # Convert to tensors
+        input_tensor = torch.from_numpy(input_float)
+        target_tensor = torch.from_numpy(target_float)
 
-        return {'A': img_A, 'B': img_B, 'A_paths': path, 'B_paths': path}
+        # Ensure channel dimension is first (C, H, W)
+        if input_tensor.dim() == 3 and input_tensor.shape[2] in [1, 3, 4]:  # (H, W, C) format
+            input_tensor = input_tensor.permute(2, 0, 1)
+        elif input_tensor.dim() == 2:  # (H, W) format, add channel dim
+            input_tensor = input_tensor.unsqueeze(0)
+
+        if target_tensor.dim() == 3 and target_tensor.shape[2] in [1, 3, 4]:  # (H, W, C) format
+            target_tensor = target_tensor.permute(2, 0, 1)
+        elif target_tensor.dim() == 2:  # (H, W) format, add channel dim
+            target_tensor = target_tensor.unsqueeze(0)
+
+        return input_tensor, target_tensor
 
 
-class UnalignedDataset(Dataset):
+class ExperimentConfig:
     """
-    Dataset class for unaligned image domains (CycleGAN).
-
-    This dataset assumes that the images in domain A and B are not aligned and stored in separate directories.
+    Configuration class for experiments.
     """
 
-    def __init__(self, root, phase='train', transform=None, direction='AtoB', max_dataset_size=float("inf")):
+    def __init__(self, config_dict: Dict[str, Any]):
         """
-        Initialize the dataset.
+        Initialize experiment configuration.
 
         Args:
-            root: Root directory containing the images
-            phase: 'train', 'val', or 'test'
-            transform: Image transformations to apply
-            direction: 'AtoB' or 'BtoA' - which domain is the input
-            max_dataset_size: Maximum number of images to use
+            config_dict: Configuration dictionary
         """
-        self.root = Path(root)
-        self.phase = phase
-        self.transform = transform
-        self.direction = direction
-        self.max_dataset_size = max_dataset_size
+        self.config = config_dict
 
-        # Find the domain directories
-        self.dir_A = self.root / f'{phase}A'
-        self.dir_B = self.root / f'{phase}B'
-
-        # Create alternative paths if standard paths don't exist
-        if not self.dir_A.exists() or not self.dir_B.exists():
-            self.dir_A = self.root / 'A'
-            self.dir_B = self.root / 'B'
-
-        if not self.dir_A.exists() or not self.dir_B.exists():
-            raise ValueError(f"Directories {self.dir_A} and {self.dir_B} do not exist")
-
-        # Get all image paths
-        self.A_paths = sorted([str(p) for p in self.dir_A.glob('*.jpg') if p.is_file()])
-        self.A_paths.extend(sorted([str(p) for p in self.dir_A.glob('*.png') if p.is_file()]))
-
-        self.B_paths = sorted([str(p) for p in self.dir_B.glob('*.jpg') if p.is_file()])
-        self.B_paths.extend(sorted([str(p) for p in self.dir_B.glob('*.png') if p.is_file()]))
-
-        # Limit dataset size
-        self.A_size = min(len(self.A_paths), int(max_dataset_size))
-        self.B_size = min(len(self.B_paths), int(max_dataset_size))
-
-        self.A_paths = self.A_paths[:self.A_size]
-        self.B_paths = self.B_paths[:self.B_size]
-
-    def __len__(self):
-        return max(self.A_size, self.B_size)
-
-    def __getitem__(self, index):
-        """Return a data point and its metadata information.
-
-        Parameters:
-            index - a random integer for data indexing
-
-        Returns a dictionary that contains A, B, A_paths and B_paths
-            A (tensor) - an image in the input domain
-            B (tensor) - its corresponding image in the target domain
-            A_paths (str) - image paths
-            B_paths (str) - image paths
+    @classmethod
+    def from_file(cls, config_path: str) -> 'ExperimentConfig':
         """
-        # Make sure index is within range
-        A_index = index % self.A_size
-        B_index = random.randint(0, self.B_size - 1)  # Random B image
-
-        # Read images
-        A_path = self.A_paths[A_index]
-        B_path = self.B_paths[B_index]
-
-        A_img = Image.open(A_path).convert('RGB')
-        B_img = Image.open(B_path).convert('RGB')
-
-        # Apply transformations
-        if self.transform:
-            A_img = self.transform(A_img)
-            B_img = self.transform(B_img)
-
-        # Swap A and B if direction is BtoA
-        if self.direction == 'BtoA':
-            A_img, B_img = B_img, A_img
-            A_path, B_path = B_path, A_path
-
-        return {'A': A_img, 'B': B_img, 'A_paths': A_path, 'B_paths': B_path}
-
-
-class SingleDataset(Dataset):
-    """Dataset class for testing on a single-domain dataset (inference only)."""
-
-    def __init__(self, root, transform=None, direction='AtoB', max_dataset_size=float("inf")):
-        """
-        Initialize the dataset.
+        Load configuration from file.
 
         Args:
-            root: Root directory containing the images
-            transform: Image transformations to apply
-            direction: 'AtoB' or 'BtoA' - which domain is the input
-            max_dataset_size: Maximum number of images to use
+            config_path: Path to configuration file
+
+        Returns:
+            ExperimentConfig object
         """
-        self.root = Path(root)
-        self.transform = transform
-        self.direction = direction
-        self.max_dataset_size = max_dataset_size
+        import json
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+        return cls(config_dict)
 
-        # Find the domain directory (only need A for inference)
-        self.dir = self.root / 'test' if (self.root / 'test').exists() else self.root
-
-        # Get all image paths
-        self.paths = sorted([str(p) for p in self.dir.glob('*.jpg') if p.is_file()])
-        self.paths.extend(sorted([str(p) for p in self.dir.glob('*.png') if p.is_file()]))
-
-        # Limit dataset size
-        self.size = min(len(self.paths), int(max_dataset_size))
-        self.paths = self.paths[:self.size]
-
-    def __len__(self):
-        return self.size
-
-    def __getitem__(self, index):
-        """Return a data point and its metadata information.
-
-        Parameters:
-            index - a random integer for data indexing
-
-        Returns a dictionary that contains A and A_paths
-            A (tensor) - an image in the input domain
-            A_paths (str) - image paths
+    def get(self, key: str, default: Any = None) -> Any:
         """
-        # Read image
-        path = self.paths[index]
-        img = Image.open(path).convert('RGB')
+        Get configuration value by key.
 
-        # Apply transformations
-        if self.transform:
-            img = self.transform(img)
+        Args:
+            key: Configuration key (supports dot notation for nested keys)
+            default: Default value if key not found
 
-        return {'A': img, 'A_paths': path}
+        Returns:
+            Configuration value
+        """
+        keys = key.split('.')
+        value = self.config
+
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return default
+
+        return value
+
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set configuration value.
+
+        Args:
+            key: Configuration key (supports dot notation for nested keys)
+            value: Configuration value
+        """
+        keys = key.split('.')
+        config = self.config
+
+        for i, k in enumerate(keys[:-1]):
+            if k not in config:
+                config[k] = {}
+            config = config[k]
+
+        config[keys[-1]] = value
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert to dictionary.
+
+        Returns:
+            Configuration dictionary
+        """
+        return self.config.copy()
+
+
+class TrainingResults:
+    """
+    Class for storing and tracking training results.
+    """
+
+    def __init__(self):
+        """Initialize training results."""
+        self.epoch_losses = []
+        self.validation_metrics = []
+        self.best_metric = None
+        self.best_epoch = None
+        self.training_time = 0.0
+        self.early_stopped = False
+
+    def add_epoch_loss(self, epoch: int, losses: Dict[str, float]) -> None:
+        """
+        Add loss for an epoch.
+
+        Args:
+            epoch: Epoch number
+            losses: Dictionary of loss values
+        """
+        self.epoch_losses.append({
+            'epoch': epoch,
+            **losses
+        })
+
+    def add_validation_metric(self, epoch: int, metrics: Dict[str, float]) -> None:
+        """
+        Add validation metrics for an epoch.
+
+        Args:
+            epoch: Epoch number
+            metrics: Dictionary of metric values
+        """
+        self.validation_metrics.append({
+            'epoch': epoch,
+            **metrics
+        })
+
+    def update_best_metric(self, metric_name: str, metric_value: float, epoch: int,
+                           mode: str = 'max') -> bool:
+        """
+        Update best metric if current value is better.
+
+        Args:
+            metric_name: Name of the metric
+            metric_value: Value of the metric
+            epoch: Current epoch
+            mode: 'max' if higher is better, 'min' if lower is better
+
+        Returns:
+            True if metric improved, False otherwise
+        """
+        improved = False
+
+        if self.best_metric is None:
+            improved = True
+        elif mode == 'max' and metric_value > self.best_metric:
+            improved = True
+        elif mode == 'min' and metric_value < self.best_metric:
+            improved = True
+
+        if improved:
+            self.best_metric = metric_value
+            self.best_epoch = epoch
+
+        return improved
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert to dictionary.
+
+        Returns:
+            Training results as dictionary
+        """
+        return {
+            'epoch_losses': self.epoch_losses,
+            'validation_metrics': self.validation_metrics,
+            'best_metric': self.best_metric,
+            'best_epoch': self.best_epoch,
+            'training_time': self.training_time,
+            'early_stopped': self.early_stopped
+        }

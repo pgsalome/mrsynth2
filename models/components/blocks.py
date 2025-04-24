@@ -1,3 +1,5 @@
+"""Common building blocks for model architectures."""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -190,92 +192,6 @@ class UnetSkipConnectionBlock(nn.Module):
         else:
             # Add skip connection
             return torch.cat([x, self.model(x)], 1)
-
-
-class SelfAttention(nn.Module):
-    """Self-attention module for GANs."""
-
-    def __init__(self, in_channels: int):
-        """
-        Initialize the self-attention module.
-
-        Args:
-            in_channels: Number of input channels
-        """
-        super(SelfAttention, self).__init__()
-        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))  # Learnable parameter
-        self.softmax = nn.Softmax(dim=-1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x: Input tensor of shape [B, C, H, W]
-
-        Returns:
-            Attention output tensor of same shape
-        """
-        batch_size, C, width, height = x.size()
-
-        # Project into query, key, value spaces
-        proj_query = self.query_conv(x).view(batch_size, -1, width * height).permute(0, 2, 1)  # B x (H*W) x C'
-        proj_key = self.key_conv(x).view(batch_size, -1, width * height)  # B x C' x (H*W)
-
-        # Calculate attention map
-        energy = torch.bmm(proj_query, proj_key)  # B x (H*W) x (H*W)
-        attention = self.softmax(energy)  # B x (H*W) x (H*W)
-
-        # Apply attention to values
-        proj_value = self.value_conv(x).view(batch_size, -1, width * height)  # B x C x (H*W)
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))  # B x C x (H*W)
-        out = out.view(batch_size, C, width, height)  # B x C x H x W
-
-        # Apply residual connection with learnable weight
-        out = self.gamma * out + x
-
-        return out
-
-
-class AdaIN(nn.Module):
-    """Adaptive Instance Normalization layer."""
-
-    def __init__(self, style_dim: int, channel_dim: int):
-        """
-        Initialize AdaIN layer.
-
-        Args:
-            style_dim: Dimension of style input
-            channel_dim: Number of channels to normalize
-        """
-        super(AdaIN, self).__init__()
-        self.instance_norm = nn.InstanceNorm2d(channel_dim, affine=False)
-        self.style_scale = nn.Linear(style_dim, channel_dim)
-        self.style_bias = nn.Linear(style_dim, channel_dim)
-
-    def forward(self, x: torch.Tensor, style: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x: Input feature map [B, C, H, W]
-            style: Style vector [B, style_dim]
-
-        Returns:
-            Normalized and modulated feature map
-        """
-        # Apply instance norm
-        x = self.instance_norm(x)
-
-        # Extract scale and bias from style
-        style_scale = self.style_scale(style).unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1]
-        style_bias = self.style_bias(style).unsqueeze(2).unsqueeze(3)  # [B, C, 1, 1]
-
-        # Apply scale and bias
-        return x * style_scale + style_bias
 
 
 def get_norm_layer(norm_type: str = 'instance') -> Callable:

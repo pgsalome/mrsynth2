@@ -1,3 +1,5 @@
+"""Dataset exports and factory functions."""
+
 from typing import Dict, Any, Optional
 from torch.utils.data import Dataset
 import os
@@ -5,6 +7,71 @@ import os
 from .aligned_dataset import AlignedDataset
 from .unaligned_dataset import UnalignedDataset
 from .single_dataset import SingleDataset
+
+
+class ImageTranslationDataset(Dataset):
+    """
+    Dataset wrapper for image translation datasets loaded from processed data.
+    """
+
+    def __init__(self, dataset_items, transform=None):
+        """
+        Initialize the dataset.
+
+        Args:
+            dataset_items: List of dataset items (ImagePair objects or similar)
+            transform: Transformations to apply to images
+        """
+        self.dataset_items = dataset_items
+        self.transform = transform
+
+    def __len__(self):
+        """Get dataset size."""
+        return len(self.dataset_items)
+
+    def __getitem__(self, index):
+        """
+        Get a data point.
+
+        Args:
+            index: Index of the data point
+
+        Returns:
+            Dictionary with data
+        """
+        item = self.dataset_items[index]
+
+        # Handle ImagePair objects
+        if hasattr(item, 'input_img') and hasattr(item, 'target_img'):
+            input_tensor, target_tensor = item.to_tensors()
+
+            # Apply transformations if provided
+            if self.transform:
+                input_tensor = self.transform(input_tensor)
+                target_tensor = self.transform(target_tensor)
+
+            return {
+                'A': input_tensor,
+                'B': target_tensor,
+                'A_paths': item.input_path if hasattr(item, 'input_path') else None,
+                'B_paths': item.target_path if hasattr(item, 'target_path') else None
+            }
+
+        # Handle dictionary-like items
+        elif isinstance(item, dict):
+            result = {}
+            for key, value in item.items():
+                if hasattr(value, 'shape') and self.transform:
+                    result[key] = self.transform(value)
+                else:
+                    result[key] = value
+            return result
+
+        # Handle other types
+        else:
+            if self.transform:
+                item = self.transform(item)
+            return item
 
 
 def create_dataset(config: Dict[str, Any], phase: str = 'train') -> Dataset:

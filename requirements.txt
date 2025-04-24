@@ -1,28 +1,37 @@
-{
-  "dataroot": "./datasets/facades",
-  "name": "facades_pix2pix",
-  "model": "pix2pix",
-  "direction": "BtoA",
-  "lambda_L1": 100.0,
-  "gan_mode": "vanilla",
-  "pool_size": 0,
-  "lr_policy": "linear",
-  "lr": 0.0002,
-  "beta1": 0.5,
-  "epoch_count": 1,
-  "n_epochs": 100,
-  "n_epochs_decay": 100,
-  "save_epoch_freq": 5,
-  "save_latest_freq": 5000,
-  "print_freq": 100,
-  "display_freq": 400,
-  "update_html_freq": 1000,
-  "no_html": false,
-  "save_by_iter": false,
-  "continue_train": false,
-  "phase": "train",
-  "enable_validation": true,
-  "val_freq": 5,
-  "val_batch_size": 1,
-  "use_cache": true
-}
+# Core
+torch>=1.8.0
+torchvision>=0.9.0
+numpy>=1.19.0
+pandas>=1.1.0
+matplotlib>=3.3.0
+scipy>=1.5.0
+scikit-image>=0.17.0
+tqdm>=4.50.0
+Pillow>=8.0.0
+
+# Medical Imaging
+nibabel>=3.2.0
+SimpleITK>=2.0.0
+pydicom>=2.1.0
+dicom2nifti>=2.2.0
+
+# Image Registration (optional)
+antspyx>=0.2.0
+
+# Deep Learning Utilities
+wandb>=0.12.0
+tensorboard>=2.4.0
+lpips>=0.1.4
+pytorch-fid>=0.2.0
+kornia>=0.5.0
+
+# Image Processing
+opencv-python>=4.5.0
+albumentations>=1.0.0
+
+# Hyperparameter Optimization
+optuna>=2.8.0
+
+# Utilities
+pyyaml>=5.4.0
+jsonschema>=3.2.0

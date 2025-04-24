@@ -1,5 +1,5 @@
-import os
-import random
+"""Dataset for single images (inference/testing)."""
+
 from pathlib import Path
 import torch.utils.data as data
 from PIL import Image
@@ -7,24 +7,23 @@ import torchvision.transforms as transforms
 from typing import Callable, Optional, Dict, Any
 
 
-class UnalignedDataset(data.Dataset):
+class SingleDataset(data.Dataset):
     """
-    Dataset class for unpaired image-to-image translation (CycleGAN).
+    Dataset class for testing on a single domain (inference).
 
-    This dataset assumes that the images in domain A and B are unaligned
-    and stored in separate directories.
+    This dataset loads images from a single directory for testing or inference.
     """
 
     def __init__(
             self,
             dataroot: str,
-            phase: str = 'train',
+            phase: str = 'test',
             direction: str = 'AtoB',
             transform: Optional[Callable] = None,
-            load_size: int = 286,
+            load_size: int = 256,
             crop_size: int = 256,
-            preprocess: str = 'resize_and_crop',
-            no_flip: bool = False,
+            preprocess: str = 'resize',
+            no_flip: bool = True,
             max_dataset_size: float = float("inf")
     ):
         """
@@ -32,7 +31,7 @@ class UnalignedDataset(data.Dataset):
 
         Args:
             dataroot: Root directory containing the data
-            phase: Train/val/test phase
+            phase: Test phase
             direction: AtoB or BtoA, determines which domain is input
             transform: Optional transform to apply
             load_size: Size to load the images
@@ -42,40 +41,29 @@ class UnalignedDataset(data.Dataset):
             max_dataset_size: Maximum number of samples to load
         """
         self.dataroot = Path(dataroot)
-        self.phase = phase
         self.direction = direction
 
         # Load size parameters
         self.load_size = load_size
         self.crop_size = crop_size
         self.preprocess = preprocess
-        self.no_flip = no_flip
 
-        # Find the domain directories
-        self.dir_A = self.dataroot / f'{phase}A'
-        self.dir_B = self.dataroot / f'{phase}B'
+        # Find the image directory
+        if phase == 'test':
+            self.dir = self.dataroot / 'test'
+        else:
+            self.dir = self.dataroot
 
-        # Create alternative paths if standard paths don't exist
-        if not self.dir_A.exists() or not self.dir_B.exists():
-            self.dir_A = self.dataroot / 'A'
-            self.dir_B = self.dataroot / 'B'
-
-        if not self.dir_A.exists() or not self.dir_B.exists():
-            raise ValueError(f"Directories {self.dir_A} and {self.dir_B} do not exist")
+        if not self.dir.exists():
+            raise ValueError(f"Directory {self.dir} does not exist")
 
         # Get all image paths
-        self.A_paths = sorted([str(p) for p in self.dir_A.glob('*.jpg')])
-        self.A_paths.extend(sorted([str(p) for p in self.dir_A.glob('*.png')]))
-
-        self.B_paths = sorted([str(p) for p in self.dir_B.glob('*.jpg')])
-        self.B_paths.extend(sorted([str(p) for p in self.dir_B.glob('*.png')]))
+        self.paths = sorted([str(p) for p in self.dir.glob('*.jpg')])
+        self.paths.extend(sorted([str(p) for p in self.dir.glob('*.png')]))
 
         # Limit dataset size
-        self.A_size = min(len(self.A_paths), int(max_dataset_size))
-        self.B_size = min(len(self.B_paths), int(max_dataset_size))
-
-        self.A_paths = self.A_paths[:self.A_size]
-        self.B_paths = self.B_paths[:self.B_size]
+        self.size = min(len(self.paths), int(max_dataset_size))
+        self.paths = self.paths[:self.size]
 
         # Create transform if not provided
         self.transform = transform
@@ -84,7 +72,7 @@ class UnalignedDataset(data.Dataset):
 
     def __len__(self):
         """Get dataset size."""
-        return max(self.A_size, self.B_size)
+        return self.size
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
         """
@@ -94,30 +82,17 @@ class UnalignedDataset(data.Dataset):
             index: Index of the data point
 
         Returns:
-            Dictionary containing A, B, A_paths, and B_paths
+            Dictionary containing A and A_paths
         """
-        # Make sure index is within range
-        A_index = index % self.A_size
-        B_index = random.randint(0, self.B_size - 1)  # Random B image
-
-        # Read images
-        A_path = self.A_paths[A_index]
-        B_path = self.B_paths[B_index]
-
-        A_img = Image.open(A_path).convert('RGB')
-        B_img = Image.open(B_path).convert('RGB')
+        # Read image
+        path = self.paths[index]
+        img = Image.open(path).convert('RGB')
 
         # Apply transformations
         if self.transform:
-            A_img = self.transform(A_img)
-            B_img = self.transform(B_img)
+            img = self.transform(img)
 
-        # Swap A and B if direction is BtoA
-        if self.direction == 'BtoA':
-            A_img, B_img = B_img, A_img
-            A_path, B_path = B_path, A_path
-
-        return {'A': A_img, 'B': B_img, 'A_paths': A_path, 'B_paths': B_path}
+        return {'A': img, 'A_paths': path}
 
     def _get_transform(self) -> Callable:
         """
@@ -137,14 +112,7 @@ class UnalignedDataset(data.Dataset):
 
         # Crop
         if 'crop' in self.preprocess:
-            if self.phase == 'train':
-                transform_list.append(transforms.RandomCrop(self.crop_size))
-            else:
-                transform_list.append(transforms.CenterCrop(self.crop_size))
-
-        # Flip
-        if self.phase == 'train' and not self.no_flip:
-            transform_list.append(transforms.RandomHorizontalFlip())
+            transform_list.append(transforms.CenterCrop(self.crop_size))
 
         # Convert to tensor and normalize
         transform_list.extend([
