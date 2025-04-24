@@ -4,7 +4,7 @@ A deep learning repository for synthesizing and translating between MRI sequence
 
 ## Overview
 
-This repository implements multiple image-to-image translation models for MRI sequence synthesis tasks. It enables the generation of one MRI contrast from another (e.g., T1-weighted to T2-weighted) using various GAN architectures. The codebase features a modular and extensible design based on the structure of the mrclass2 classification repository.
+This repository implements multiple image-to-image translation models for MRI sequence synthesis tasks. It enables the generation of one MRI contrast from another (e.g., T1-weighted to T2-weighted) using various GAN architectures. The codebase features a modular and extensible design for neural network research.
 
 ## Features
 
@@ -13,6 +13,7 @@ This repository implements multiple image-to-image translation models for MRI se
   - Pix2Pix for paired image translation
   - Diffusion models for high-quality generation
   - VAE models for latent space manipulation
+  - Latent diffusion models combining VAE and diffusion approaches
   - Self-attention enhanced generators
   - Spectral normalization for discriminator stability
 
@@ -40,7 +41,7 @@ This repository implements multiple image-to-image translation models for MRI se
   - Comprehensive metrics visualization
 
 - **Complete Preprocessing Pipeline**:
-  - DICOM to NIfTI conversion
+  - DICOM to NIfTI conversion capabilities
   - MRI normalization and bias field correction
   - Registration between different MRI sequences
   - 2D slice extraction with content filtering
@@ -57,49 +58,59 @@ This repository implements multiple image-to-image translation models for MRI se
 ```
 mrsynth2/
 ├── config/                # Configuration files
-│   ├── base.json         # Base configuration
-│   ├── cyclegan.json     # CycleGAN configuration
-│   ├── diffusion.json    # Diffusion model configuration
-│   ├── pix2pix.json      # Pix2Pix configuration
-│   ├── vae.json          # VAE configuration
-│   └── latent_diffusion  # Latent diffusion configuration
-├── preprocessing/        # Preprocessing scripts
-│   ├── combine_AB.py     # Combine A and B domains for pix2pix
-│   ├── convert_dicom.py  # DICOM to NIfTI conversion
-│   ├── create_dataset.py # Dataset creation utilities
-│   ├── create_slices.py  # Extract 2D slices from 3D volumes
-│   ├── data_preparation.py # Dataset organization and preparation
-│   ├── normalize_mri.py  # MRI normalization
-│   ├── preprocess.py     # Final image preprocessing and augmentation
-│   ├── register_images.py # Registration script
-│   └── utils/            # Shared preprocessing utilities
-│       ├── registration.py # Registration functions
-│       └── slice_extraction.py # Slice extraction functions
-├── models/                # Model implementations
+│   ├── defaults/         # Default configurations
+│   │   ├── base.json     # Base configuration
+│   │   ├── cyclegan.json # CycleGAN configuration
+│   │   ├── diffusion.json # Diffusion model configuration
+│   │   ├── pix2pix.json  # Pix2Pix configuration
+│   │   ├── vae.json      # VAE configuration
+│   │   └── latent_diffusion.json # Latent diffusion configuration
+│   └── hyperparameters/  # Hyperparameter search spaces
+├── data/                 # Data loading modules
+│   ├── datasets/         # Dataset classes
+│   │   ├── __init__.py   # Dataset factory
+│   │   ├── aligned_dataset.py # Aligned dataset (pix2pix)
+│   │   ├── unaligned_dataset.py # Unaligned dataset (cyclegan)
+│   │   └── single_dataset.py # Single image dataset (inference)
+│   └── dataloader.py     # DataLoader creation utilities
+├── models/               # Model implementations
+│   ├── __init__.py       # Model factory and registry
+│   ├── model_registry.py # Model registration system
 │   ├── cycle_gan.py      # CycleGAN implementation
-│   ├── discriminator.py  # Discriminator architectures
-│   ├── diffusion.py      # Diffusion model implementation
-│   ├── generator.py      # Generator architectures
-│   ├── model_factory.py  # Factory for creating models
 │   ├── pix2pix.py        # Pix2Pix implementation
-│   └── vae.py            # VAE model implementation
+│   ├── diffusion.py      # Diffusion model implementation
+│   ├── vae.py            # VAE model implementation
+│   ├── components/       # Shared model components
+│   │   ├── __init__.py   # Component exports
+│   │   ├── attention.py  # Attention mechanisms
+│   │   ├── blocks.py     # Building blocks (ResNet, UNet)
+│   │   ├── initialization.py # Weight initialization
+│   │   └── normalization.py # Normalization layers
+│   ├── generators/       # Generator architectures
+│   │   ├── __init__.py   # Generator factory
+│   │   ├── resnet_generator.py # ResNet generator
+│   │   ├── unet_generator.py # UNet generator
+│   │   ├── stylegan_generator.py # StyleGAN2 generator
+│   │   └── attention_resnet_generator.py # Attention ResNet
+│   └── discriminators/   # Discriminator architectures
+│       ├── __init__.py   # Discriminator factory
+│       ├── patch_discriminator.py # PatchGAN discriminator
+│       ├── spectral_discriminator.py # Spectral norm discriminator
+│       └── multiscale_discriminator.py # Multi-scale discriminator
 ├── scripts/              # Utility scripts
 │   ├── evaluate.py       # Evaluation script
 │   ├── predict.py        # Inference script
 │   ├── run_experiments.py # Experiment runner with Optuna
 │   └── train.py          # Training script
-├── src/                  # Source code
-│   ├── data_loader.py    # Data loading pipeline
-│   └── utils/            # Utility functions
-│       ├── cache.py      # Caching utilities
-│       ├── config.py     # Configuration utilities 
-│       ├── dataclass.py  # Data structures
-│       ├── html.py       # HTML visualization
-│       ├── image_pool.py # Image buffer for GANs
-│       ├── io.py         # I/O utilities
-│       ├── metrics.py    # Evaluation metrics
-│       ├── perceptual_loss.py # Perceptual losses
-│       └── visualizer.py # Visualization utilities
+├── utils/                # Utility functions
+│   ├── cache.py          # Caching utilities
+│   ├── config.py         # Configuration utilities 
+│   ├── dataclass.py      # Data structures
+│   ├── hyperparameter_tuning.py # Hyperparameter tuning
+│   ├── image_pool.py     # Image buffer for GANs
+│   ├── io.py             # I/O utilities
+│   ├── metrics.py        # Evaluation metrics
+│   └── perceptual_loss.py # Perceptual losses
 ├── requirements.txt      # Package dependencies
 └── README.md             # This file
 ```
@@ -142,64 +153,6 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Preprocessing Pipeline
-
-The repository includes a complete preprocessing pipeline for MRI data:
-
-#### 1. DICOM to NIfTI Conversion
-
-Convert DICOM files to NIfTI format:
-
-```bash
-python preprocessing/convert_dicom.py --input_dir path/to/dicom --output_dir path/to/nifti
-```
-
-#### 2. MRI Normalization
-
-Apply intensity normalization and bias field correction:
-
-```bash
-python preprocessing/normalize_mri.py --input_dir path/to/nifti --output_dir path/to/normalized --method z_score
-```
-
-#### 3. Registration (for paired data)
-
-Align volumes from different sequences:
-
-```bash
-python preprocessing/register_images.py --fixed_dir path/to/t1 --moving_dir path/to/t2 --output_dir path/to/registered
-```
-
-#### 4. Slice Extraction
-
-Extract 2D slices from 3D volumes:
-
-```bash
-python preprocessing/create_slices.py --input_dir path/to/volumes --output_dir path/to/slices --axis 2
-```
-
-#### 5. Dataset Preparation
-
-Prepare datasets for training:
-
-```bash
-python preprocessing/data_preparation.py --input_dir path/to/slices --output_dir path/to/dataset --dataset_type cyclegan --domain_a_dir t1 --domain_b_dir t2
-```
-
-Or for paired data:
-
-```bash
-python preprocessing/combine_AB.py --dir_A path/to/t1 --dir_B path/to/t2 --output_dir path/to/paired
-```
-
-#### 6. Final Preprocessing
-
-Apply final preprocessing steps:
-
-```bash
-python preprocessing/preprocess.py --config config/base.json --input_dir path/to/dataset --dataset_mode unaligned
-```
-
 ### Configuration
 
 The model and training parameters are controlled through JSON configuration files. Key sections include:
@@ -238,13 +191,13 @@ Example configuration for CycleGAN:
 To train a model with the default configuration:
 
 ```bash
-python scripts/train.py --config config/base.json
+python scripts/train.py --model_type cyclegan --base_config config/defaults/base.json
 ```
 
 To customize training parameters:
 
 ```bash
-python scripts/train.py --config config/base.json --batch_size 4 --model_type cyclegan
+python scripts/train.py --model_type cyclegan --base_config config/defaults/base.json --batch_size 4
 ```
 
 ### Evaluation
@@ -252,7 +205,7 @@ python scripts/train.py --config config/base.json --batch_size 4 --model_type cy
 To evaluate a trained model:
 
 ```bash
-python scripts/evaluate.py --model_dir saved_models/cyclegan_20230415_120000 --compute_fid
+python scripts/evaluate.py --model_path saved_models/cyclegan_20230415_120000/final_model.pth --config saved_models/cyclegan_20230415_120000/config.json --compute_fid
 ```
 
 ### Inference
@@ -260,7 +213,7 @@ python scripts/evaluate.py --model_dir saved_models/cyclegan_20230415_120000 --c
 To run inference on a single image:
 
 ```bash
-python scripts/predict.py --model_dir saved_models/cyclegan_20230415_120000 --input_image input.png --output_dir results
+python scripts/predict.py --model_path saved_models/cyclegan_20230415_120000/final_model.pth --config saved_models/cyclegan_20230415_120000/config.json --input input.png --output_dir results
 ```
 
 ### Hyperparameter Optimization
@@ -268,79 +221,32 @@ python scripts/predict.py --model_dir saved_models/cyclegan_20230415_120000 --in
 To run Bayesian hyperparameter optimization with Optuna:
 
 ```bash
-python scripts/run_experiments.py --base_config config/base.json --output_dir experiments/optuna --n_trials 50 --mode optuna
-```
-
-To generate configurations for a grid search:
-
-```bash
-python scripts/run_experiments.py --base_config config/base.json --output_dir experiments/grid --mode grid --generate_only
+python scripts/run_experiments.py --base_config config/defaults/base.json --output_dir experiments/optuna --model_type cyclegan --n_trials 50
 ```
 
 ## Extending the Repository
 
 ### Adding New Generator Architectures
 
-To add a new generator architecture, extend the `models/generator.py` module with your implementation and update the `get_generator` function.
+To add a new generator architecture:
+1. Create a new file in `models/generators/`
+2. Implement your generator class
+3. Register it in `models/generators/__init__.py`
 
 ### Adding New Discriminator Architectures
 
-To add a new discriminator architecture, extend the `models/discriminator.py` module with your implementation and update the `get_discriminator` function.
+To add a new discriminator architecture:
+1. Create a new file in `models/discriminators/`
+2. Implement your discriminator class
+3. Register it in `models/discriminators/__init__.py`
 
-### Adding New Loss Functions
+### Adding New Model Types
 
-To add a new loss function, implement it in the appropriate model file (e.g., `models/cycle_gan.py`).
-
-### Adding New Preprocessing Steps
-
-To add new preprocessing functionality, add it to the appropriate file in the `preprocessing/` directory or create a new script if needed.
-
-## Examples
-
-### Complete MRI Synthesis Pipeline
-
-```bash
-# 1. Convert DICOM to NIfTI
-python preprocessing/convert_dicom.py --input_dir data/dicom --output_dir data/nifti
-
-# 2. Normalize MRI data
-python preprocessing/normalize_mri.py --input_dir data/nifti --output_dir data/normalized
-
-# 3. Extract slices
-python preprocessing/create_slices.py --input_dir data/normalized --output_dir data/slices
-
-# 4. Prepare dataset
-python preprocessing/data_preparation.py --input_dir data/slices --output_dir data/prepared --dataset_type cyclegan
-
-# 5. Train CycleGAN model
-python scripts/train.py --config config/cyclegan.json --output_dir experiments/t1_to_t2
-```
-
-### CycleGAN Training for T1 to T2 Translation
-
-```bash
-python scripts/train.py --config config/cyclegan_t1_t2.json
-```
-
-### Pix2Pix Training for T1 to FLAIR Translation
-
-```bash
-python scripts/train.py --config config/pix2pix_t1_flair.json
-```
-
-### Diffusion Model Training
-
-```bash
-python scripts/train.py --config config/diffusion.json
-```
-
-### Evaluating Multiple Models
-
-```bash
-for model in saved_models/*/; do
-  python scripts/evaluate.py --model_dir $model --output_dir evaluations/$(basename $model)
-done
-```
+To add a new model type:
+1. Create a new file in `models/` (e.g., `new_model.py`)
+2. Implement your model class
+3. Register it in `models/__init__.py`
+4. Add default configuration in `config/defaults/new_model.json`
 
 ## Weights & Biases Integration
 
@@ -390,5 +296,3 @@ This project builds upon methods and architectures from the following works:
 - StyleGAN2 (Karras et al., CVPR 2020)
 - Diffusion Models (Ho et al., NeurIPS 2020)
 - Latent Diffusion Models (Rombach et al., CVPR 2022)
-
-The structure is adapted from the mrclass2 repository for MRI classification.
